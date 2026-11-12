@@ -1,0 +1,16 @@
+# The streamer: after a long jump the world must catch up, and the chunk count
+# drawn must be neither tiny (nothing uploaded) nor everything (LOD broken).
+# Run with --seed 7 --size 960x540.
+cam 0,900,1400
+look 0 -25
+wait 0.3
+shot build/shots/stream-a.png
+assert chunks_drawn > 20
+assert chunks_drawn < 600
+
+# drop to ground level in one step: the tier rebuild must not wedge
+cam 200,60,200
+look 90 -2
+shot build/shots/stream-b.png
+assert chunks_drawn > 20
+assert cam_y > 0

@@ -1,0 +1,10 @@
+# Rivers and the sea, close enough that a colour or Fresnel change is obvious.
+# Run with --seed 7 --size 960x540 to keep it under a second.
+time 16.0
+cam 0,120,600
+look 0 -8
+wait 0.3
+shot build/shots/water.png
+assert rivers > 0
+assert chunks_drawn > 20
+assert shadowed_pct < 90

@@ -4,14 +4,23 @@ A single-file sokol/Metal terrain viewer. `src/main.c` is the game; `src/terrain
 and `src/math3d.h` are the deterministic world; `src/shaders.glsl` is the shader
 source and `src/shaders.h` is generated from it.
 
-## The four commands
+## The commands
 
 ```sh
+tools/check.sh         # definition of done: build + tests + replays + goldens (~7s)
+tools/check.sh --quick # build + unit tests + smoke replay (~3s)
 tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/a.png
 tools/render.sh replay replays/smoke.txt
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
+tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
+tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
 tools/shaders.sh       # regenerate src/shaders.h — human-triggered only
 ```
+
+Build is a `Makefile`; `./build.sh [game|test|debug]` wraps it. `src/sokol_impl.c`
+is a separate TU on purpose: a game edit rebuilds in ~1s, sokol only when
+`libs/sokol` changes. `tools/compile_commands.sh` writes `compile_commands.json`
+(gitignored) for clangd.
 
 `shot` and `replay` never open a window: they create a Metal device, render into
 an offscreen 4x-MSAA texture, read it back, and write a PNG. `dump` does not even
@@ -61,16 +70,18 @@ Prefer a `shot` followed by asserts over asserts alone: chunk and mesh counters
 only exist once something has rendered, and `dump` mode skips those asserts.
 
 **4. Compare against before.** Two runs with the same `--seed/--cam/--yaw/--time`
-produce a byte-identical PNG. So:
+produce a byte-identical PNG, so a refactor that was supposed to change nothing
+is checkable:
 
 ```sh
-shasum build/shots/check.png     # change something, re-run, compare
+tools/diff.sh before.png after.png          # exits 1 above 0.3% mean difference
+tools/diff.sh tests/golden/dusk.png build/shots/golden-dusk.png
 ```
 
-Same hash = no visual change; different hash = it did change, so go look at
-`check.png.small.png` rather than trusting the diff. A hash change you did not
-intend is a bug, and it is the only signal you have that a refactor moved a
-pixel.
+Three canonical views are recorded in `tests/golden/` and verified by
+`tools/check.sh`. If your change is *meant* to move pixels, re-record with
+`tools/goldens.sh` and say why in the commit message; if it is not, a diff is a
+bug.
 
 **Useful flags**
 
@@ -91,9 +102,11 @@ pixel.
 - `assert` on render-derived fields (`tris`, `chunks_drawn`) only after a `shot`.
 - Camera auto-aims at the peak unless `--cam`, `--yaw`/`--pitch`, or a replay
   `cam`/`look` is given. `--cam` alone is enough to keep the auto-aim off.
-- Rebuilding is not incremental: `tools/render.sh` always calls `./build.sh`
-  first. Skipping it and running `./build/game` directly can render a stale
+- `tools/render.sh` always rebuilds first (`make` is cached, so this is ~0.1s
+  when nothing changed). Running `./build/game` directly can render a stale
   binary — the exact failure mode background agents hit.
+- A sokol `PANIC` (validation failure) now exits 1 instead of continuing. If you
+  see one, the frame was never written.
 - Output dirs are not created by the game; `build/shots/` exists because
   `build.sh` makes it.
 
@@ -127,8 +140,8 @@ shot PATH                    render one frame (blocks until the world is ready)
 assert FIELD OP VALUE        OP: > < >= <= == !=
 ```
 
-Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees shadowed_pct tris
-chunks_drawn`. `tris` and `chunks_drawn` need rendering, so they are skipped in
+Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees rivers shadowed_pct
+tris chunks_drawn`. `tris` and `chunks_drawn` need rendering, so they are skipped in
 `dump` mode. `#` starts a comment.
 
 A failing assert prints `file:line: field is X, expected OP Y (t=Zs)` and exits 1.

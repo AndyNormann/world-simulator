@@ -1,0 +1,23 @@
+# The three canonical views. tools/check.sh renders these and diffs them against
+# tests/golden/, so a regression shows up as a number instead of as "it looks
+# different, maybe".
+#
+# Always run with the same flags:  --seed 7 --size 1280x720
+#   tools/goldens.sh            re-record tests/golden/ from this script
+#   tools/check.sh              verify against it
+
+wait 0.5
+cam 0,180,0
+look 45 -7
+time 17.5
+shot build/shots/golden-dusk.png
+
+cam 0,420,900
+look 0 -18
+time 12.0
+shot build/shots/golden-high.png
+
+cam 520,140,-420
+look -60 -4
+time 9.0
+shot build/shots/golden-low.png

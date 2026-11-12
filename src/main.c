@@ -1,10 +1,9 @@
+/* Declarations only: the implementation lives in src/sokol_impl.c, which is
+   compiled once instead of on every edit to this file. The defines must match
+   that file exactly or the two TUs disagree about the API surface. */
 #define SOKOL_DEBUG
-#define SOKOL_IMPL
-/* never grab focus on launch: see the note in sokol_app.h */
 #define SAPP_DONT_ACTIVATE
 #define SOKOL_METAL
-/* sokol_app defines main(); this file has its own so `game shot` can run
-   without ever opening a window (see main() at the bottom) */
 #define SOKOL_NO_ENTRY
 #include "sokol_app.h"
 #include "sokol_gfx.h"
@@ -2128,6 +2127,14 @@ static void game_logger(const char *tag, uint32_t level, uint32_t item,
     if (item == SG_LOGITEM_GL_UNIFORMBLOCK_NAME_NOT_FOUND_IN_SHADER) return;
     fprintf(stderr, "%s%s%s(%u): %s\n", tag, level ? " warning: " : " PANIC: ",
             file ? file : "sokol", line, msg ? msg : "(no message)");
+    /* sokol would abort() here by default. Swallowing that turns a broken
+       pipeline or attachment setup into a plausible-looking frame, which is the
+       worst possible outcome for an agent: it reports success and ships a wrong
+       image. Fail the process instead. */
+    if (!level) {
+        fprintf(stderr, "fatal: sokol validation failed, not rendering a possibly wrong frame\n");
+        exit(1);
+    }
 }
 
 static void build_terrain(unsigned seed) {
@@ -3073,6 +3080,7 @@ static float key_state(const char *field) {
     if (!strcmp(field, "trees")) return (float)tree_count;
     if (!strcmp(field, "shadowed_pct")) return (float)shadowed_pct();
     if (!strcmp(field, "tris")) return (float)mesh_tris;
+    if (!strcmp(field, "rivers")) return (float)river_count;
     replay_die("assert: unknown field '%s'", field);
     return 0.0f;
 }

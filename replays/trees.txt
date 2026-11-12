@@ -1,0 +1,10 @@
+# Tree shapes and density on flat reference-grey ground, which is what makes a
+# silhouette measurable. Needs the flag on the command line:
+#   ./build/game replay replays/trees.txt --trees-only --seed 7
+cam 0,150,500
+look 0 -6
+time 11.0
+wait 0.3
+shot build/shots/trees.png
+assert trees > 1000
+assert chunks_drawn > 20
