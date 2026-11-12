@@ -52,7 +52,10 @@ all: game
 
 game: $(OBJDIR)/game
 
-$(OBJDIR)/game: $(OBJDIR)/main.o $(OBJDIR)/sokol_impl.o
+OBJS := $(OBJDIR)/main.o $(OBJDIR)/world.o $(OBJDIR)/render.o $(OBJDIR)/replay.o \
+        $(OBJDIR)/state.o $(OBJDIR)/sokol_impl.o
+
+$(OBJDIR)/game: $(OBJS)
 	@mkdir -p $(OBJDIR)
 	$(CC) $^ -o $@ $(FRAMEWORKS) $(LDLIBS) $(LDEXTRA)
 

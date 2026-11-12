@@ -1,8 +1,21 @@
 # Working on this repo (notes for agents and for future me)
 
-A single-file sokol/Metal terrain viewer. `src/main.c` is the game; `src/terrain.h`
-and `src/math3d.h` are the deterministic world; `src/shaders.glsl` is the shader
-source and `src/shaders.h` is generated from it.
+A sokol/Metal terrain viewer. `src/terrain.h` and `src/math3d.h` are the
+deterministic world; the game is split by concern:
+
+| file | what lives there |
+|---|---|
+| `src/main.c` | sim step, window loop, argument parsing, `main()` |
+| `src/world.c` | terrain, trees, rivers, chunk building, streaming |
+| `src/render.c` | Metal setup, `render(w,h)`, capture/readback |
+| `src/replay.c` | the replay parser and its asserts |
+| `src/state.c` | definitions of the shared globals (the list is in `src/game.h`) |
+| `src/game.h` | shared declarations: constants, types, globals, prototypes |
+| `src/sokol_impl.c` | the one TU that compiles sokol's implementation |
+| `src/shaders.glsl` | shader source; `src/shaders.h` is generated from it |
+
+Adding a file means adding it to `OBJS` in the `Makefile` and to
+`tools/compile_commands.sh`.
 
 ## The commands
 
@@ -115,6 +128,41 @@ bug.
   see one, the frame was never written.
 - Output dirs are not created by the game; `build/shots/` exists because
   `build.sh` makes it.
+
+## Definition of done — run this before you say you are finished
+
+If you think the work is complete, it is not; it is complete when these pass and
+**every finding they report is fixed or explicitly explained in your summary**.
+Do not report success while a tool is still reporting something.
+
+```sh
+tools/check.sh --slow     # ~40s: build, unit tests, replays, goldens, analyzer, sweep
+```
+
+That runs, in order: `./build.sh` (`-Werror`, `-Wshadow`), `math_test` +
+`terrain_test` under ASan+UBSan, the sim-only smoke replay, the per-area replays,
+the three golden-image diffs, **the clang static analyzer with `--strict`**, and
+a 40-seed world sweep. Any failure is yours to fix.
+
+Then, if you touched the threading (the chunk queue in `src/world.c`) or
+anything it calls:
+
+```sh
+./build.sh tsan && ./build/tsan/game replay replays/streaming.txt --seed 7 --size 320x180
+```
+
+`ThreadSanitizer` must print nothing. This is not optional: it is how the last
+five real data races were found.
+
+Rules for the analysis step:
+
+- A finding is either **fixed** or **explained** (a false positive, or a real
+  limitation you wrote down in the summary). "Pre-existing" is not an
+  explanation if you touched that code.
+- Do not silence a tool to get green: no `NDEBUG`, no `-Wno-*` in the Makefile,
+  no skipping a replay, no raising the golden tolerance. If a golden genuinely
+  must change, re-record it with `tools/goldens.sh` and say why in the commit.
+- If a tool is broken rather than finding something, fix the tool.
 
 ## Rules that exist for a reason
 

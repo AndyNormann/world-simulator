@@ -16,6 +16,10 @@ def entry(src, args):
 out = [
     entry("src/main.c", ["clang", "-x", "objective-c"] + common + objc + ["-c", "src/main.c"]),
     entry("src/sokol_impl.c", ["clang", "-x", "objective-c"] + common + objc + ["-c", "src/sokol_impl.c"]),
+    entry("src/world.c", ["clang", "-x", "objective-c"] + common + objc + ["-c", "src/world.c"]),
+    entry("src/render.c", ["clang", "-x", "objective-c"] + common + objc + ["-c", "src/render.c"]),
+    entry("src/replay.c", ["clang", "-x", "objective-c"] + common + objc + ["-c", "src/replay.c"]),
+    entry("src/state.c", ["clang", "-x", "objective-c"] + common + objc + ["-c", "src/state.c"]),
     entry("tests/math_test.c", ["clang", "-std=c99", "-g", "-O0", "-I", "libs", "-I", "src", "-c", "tests/math_test.c"]),
     entry("tests/terrain_test.c", ["clang", "-std=c99", "-g", "-O0", "-I", "libs", "-I", "src", "-c", "tests/terrain_test.c"]),
 ]
