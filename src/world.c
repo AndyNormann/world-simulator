@@ -1801,12 +1801,35 @@ void bake_colours(unsigned seed) {
             float lat = zi / (float)(N - 1);
             float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;   /* 1 at the middle row */
             float snow_line = 0.72f * peak_y * (0.80f + 0.35f * cold);
+
+            /* moisture: coast wet, interior dry, lee of a ridge dry */
+            float cont = terrain_continent(x, z, seed);
+            float interior = (cont - world_sea) / 0.40f;
+            if (interior < 0.0f) interior = 0.0f;
+            if (interior > 1.0f) interior = 1.0f;
+            float upwind = surface_height(x - 700.0f, z);
+            float lee = (upwind - h - 120.0f) / 450.0f;
+            if (lee < 0.0f) lee = 0.0f;
+            if (lee > 1.0f) lee = 1.0f;
+            float moist = 1.05f - 0.55f * interior - 0.75f * lee
+                        + 0.45f * (terrain_value_noise(x * 0.012f, z * 0.012f, seed + 41u) - 0.5f)
+                        + 0.10f * cold;
+            if (moist < 0.0f) moist = 0.0f;
+            if (moist > 1.0f) moist = 1.0f;
             float r, g, b;
             if (h < 0.0f)                       { r = 0.10f; g = 0.20f; b = 0.20f; }  /* seabed */
             else if (h < 3.0f)                  { r = 0.63f; g = 0.57f; b = 0.41f; }  /* sand */
             else if (h > snow_line)             { r = 0.90f; g = 0.86f; b = 0.79f; }  /* snow */
             else if (slope > 0.34f || peakness > 0.78f)
                                                 { r = 0.46f; g = 0.31f; b = 0.17f; }  /* rock */
+            /* Biome: moisture decides what the low ground is. Coastal plains
+               are wet, interiors are dry, and a ridge to the west (the wind
+               comes from the west throughout the generator) rains out before
+               it gets here -- the rain shadow that makes one side of a range a
+               forest and the other a dust bowl. Latitude tilts the whole thing
+               cold towards the north. */
+            else if (moist < 0.26f)             { r = 0.52f; g = 0.46f; b = 0.30f; }  /* dry steppe */
+            else if (moist > 0.66f)             { r = 0.24f; g = 0.31f; b = 0.15f; }  /* wet forest floor */
             else if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f) {
                 r = 0.27f; g = 0.18f; b = 0.08f;                       /* bare dirt */
             }

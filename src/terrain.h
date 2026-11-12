@@ -279,6 +279,20 @@ static inline float terrain_height(float x, float z, unsigned seed) {
     float low_shelf = floorf(low / low_step + 0.5f) * low_step;
     low += (low_shelf - low) * 0.35f;
 
+    /* Landform: a continent is not a flat field with a range dropped on it.
+       The interior sits higher than the coastal plain, which is what gives a
+       coast -> plain -> upland -> range -> plateau progression. Without this
+       the ground on both sides of a chain has the same character and the range
+       separates nothing -- no basin, no valley, no reason for a border there.
+       Scaled by the mountain amplitude so the step is visible in an alpine
+       world and barely there in rolling country. */
+    {
+        float interior = (cont - world_sea) / 0.40f;
+        if (interior < 0.0f) interior = 0.0f;
+        if (interior > 1.0f) interior = 1.0f;
+        low += 0.20f * g.amp_mtn * interior * interior;
+    }
+
     /* the summit: ridged noise gated by the mask. Terraced, because the
        reference mountain has stepped shelves rather than a smooth cone. */
     /* three octaves only: the fourth sits at the mesh's Nyquist and turns the
