@@ -303,7 +303,11 @@ static inline float terrain_height(float x, float z, unsigned seed) {
        a ridge with shoulders instead of a row of spikes. */
     float ridge = terrain_ridge_n(px * TERRAIN_RIDGE_SCALE, pz * TERRAIN_RIDGE_SCALE, seed, 3);
     ridge = powf(ridge > 0.0f ? ridge : 0.0f, 0.70f);
-    float mountain = g.amp_mtn * mask * (0.20f + 0.95f * ridge);
+    /* The mask is the mass and the ridged noise is the detail. The old shape
+       was almost all ridged noise (0.20 base, 0.95 detail), which means the
+       mountain's silhouette WAS the noise -- a row of spikes where a range is
+       a broad ridge with crags on it. Two-thirds base, one-third crag. */
+    float mountain = g.amp_mtn * mask * (0.52f + 0.52f * ridge);
     float stepped = floorf(mountain / TERRAIN_TERRACE_STEP + 0.5f) * TERRAIN_TERRACE_STEP;
     mountain += (stepped - mountain) * TERRAIN_TERRACE_MIX;
     mountain += g.amp_mtn * 0.06f * mask * terrain_fbm_band(px, pz, seed, 2, 1);

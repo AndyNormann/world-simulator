@@ -1769,7 +1769,61 @@ void bake_ambient(void) {
 }
 
 /* Colours per grid point (terrain-type only, lighting is in the shader). */
+/* Ground colour for one point. Shared by the vertex bake and the map tool, so
+   a world judged from above is coloured by the same rules as the world the
+   player walks through -- reviewing terrain through a palette the game never
+   shows is how a map view stops being evidence. */
+void biome_rgb(float x, float z, float h, float slope, float lat, float *out) {
+    unsigned seed = terrain_seed;
+    float mtn[3];
+    float peakness = terrain_mountain_mask(x, z, seed);
+    /* Latitude: north is cold, south is warm. A 20 km region would not really
+       run tundra to maquis, but it gives the world a "the north" that the sim
+       can starve when the passes close -- and it is the cheapest variety. */
+    float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;   /* 1 at the middle row */
+    float snow_line = 0.72f * peak_y * (0.80f + 0.35f * cold);
+
+    /* moisture: coast wet, interior dry, lee of a ridge dry */
+    float cont = terrain_continent(x, z, seed);
+    float interior = (cont - world_sea) / 0.40f;
+    if (interior < 0.0f) interior = 0.0f;
+    if (interior > 1.0f) interior = 1.0f;
+    float upwind = surface_height(x - 700.0f, z);
+    float lee = (upwind - h - 120.0f) / 450.0f;
+    if (lee < 0.0f) lee = 0.0f;
+    if (lee > 1.0f) lee = 1.0f;
+    float moist = 1.05f - 0.55f * interior - 0.75f * lee
+                + 0.45f * (terrain_value_noise(x * 0.012f, z * 0.012f, seed + 41u) - 0.5f)
+                + 0.10f * cold;
+    if (moist < 0.0f) moist = 0.0f;
+    if (moist > 1.0f) moist = 1.0f;
+
+    float r, g, b;
+    if (h < 0.0f)                       { r = 0.10f; g = 0.20f; b = 0.20f; }  /* seabed */
+    else if (h < 3.0f)                  { r = 0.63f; g = 0.57f; b = 0.41f; }  /* sand */
+    else if (h > snow_line)             { r = 0.90f; g = 0.86f; b = 0.79f; }  /* snow */
+    else if (slope > 0.34f || peakness > 0.78f)
+                                        { r = 0.46f; g = 0.31f; b = 0.17f; }  /* rock */
+    else if (moist < 0.26f)             { r = 0.52f; g = 0.46f; b = 0.30f; }  /* dry steppe */
+    else if (moist > 0.66f)             { r = 0.24f; g = 0.31f; b = 0.15f; }  /* wet forest floor */
+    else if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f)
+                                        { r = 0.27f; g = 0.18f; b = 0.08f; }  /* bare dirt */
+    else {
+        float patch = 0.5f + 0.5f * terrain_value_noise(x * 0.022f, z * 0.022f, seed + 5u);
+        r = 0.30f + 0.05f * patch;
+        g = 0.355f + 0.045f * patch;
+        b = 0.14f + 0.04f * (1.0f - patch);
+        float warm = cold - 0.75f;
+        r += 0.05f * warm;
+        g -= 0.02f * warm;
+        b -= 0.05f * warm;
+    }
+    (void)mtn;
+    out[0] = r; out[1] = g; out[2] = b;
+}
+
 void bake_colours(unsigned seed) {
+    (void)seed;
     for (int zi = 0; zi < N; zi++) {
         for (int xi = 0; xi < N; xi++) {
             int i = zi * N + xi;
@@ -1778,79 +1832,15 @@ void bake_colours(unsigned seed) {
             float z = (zi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
             int xm = xi > 0 ? xi - 1 : xi, xp = xi < N - 1 ? xi + 1 : xi;
             int zm = zi > 0 ? zi - 1 : zi, zp = zi < N - 1 ? zi + 1 : zi;
-            /* normals from the *eroded, un-terraced* surface are too smooth for
-               slope classification; use the triangle normals later instead */
             float dhdx = (heights[zi * N + xp] - heights[zi * N + xm]) / ((xp - xm) * CELL);
             float dhdz = (heights[zp * N + xi] - heights[zm * N + xi]) / ((zp - zm) * CELL);
             float ny = 1.0f / sqrtf(1.0f + dhdx * dhdx + dhdz * dhdz);
             float slope = 1.0f - ny;
-
-            /* bands are relative to the summit: a fixed altitude puts the
-               treeline in the same place whatever the seed generates, and the
-               reference mountain is bare rock above roughly its lower third */
-            /* Bare rock is per mountain, not per altitude: an island with a
-               range has summits at every height, and a single rock line drawn
-               from the tallest one paints the whole range orange. The mask
-               says "this is the upper body of a peak", which is the shape the
-               reference has -- green flanks, bare crown, snow on top. */
-            float peakness = terrain_mountain_mask(x, z, seed);
-            /* Latitude: north is cold, south is warm. A 20 km region would not
-               really run tundra to maquis, but it gives the world a "the north"
-               that the sim can starve when the passes close -- and it is the
-               cheapest variety there is. */
             float lat = zi / (float)(N - 1);
-            float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;   /* 1 at the middle row */
-            float snow_line = 0.72f * peak_y * (0.80f + 0.35f * cold);
 
-            /* moisture: coast wet, interior dry, lee of a ridge dry */
-            float cont = terrain_continent(x, z, seed);
-            float interior = (cont - world_sea) / 0.40f;
-            if (interior < 0.0f) interior = 0.0f;
-            if (interior > 1.0f) interior = 1.0f;
-            float upwind = surface_height(x - 700.0f, z);
-            float lee = (upwind - h - 120.0f) / 450.0f;
-            if (lee < 0.0f) lee = 0.0f;
-            if (lee > 1.0f) lee = 1.0f;
-            float moist = 1.05f - 0.55f * interior - 0.75f * lee
-                        + 0.45f * (terrain_value_noise(x * 0.012f, z * 0.012f, seed + 41u) - 0.5f)
-                        + 0.10f * cold;
-            if (moist < 0.0f) moist = 0.0f;
-            if (moist > 1.0f) moist = 1.0f;
-            float r, g, b;
-            if (h < 0.0f)                       { r = 0.10f; g = 0.20f; b = 0.20f; }  /* seabed */
-            else if (h < 3.0f)                  { r = 0.63f; g = 0.57f; b = 0.41f; }  /* sand */
-            else if (h > snow_line)             { r = 0.90f; g = 0.86f; b = 0.79f; }  /* snow */
-            else if (slope > 0.34f || peakness > 0.78f)
-                                                { r = 0.46f; g = 0.31f; b = 0.17f; }  /* rock */
-            /* Biome: moisture decides what the low ground is. Coastal plains
-               are wet, interiors are dry, and a ridge to the west (the wind
-               comes from the west throughout the generator) rains out before
-               it gets here -- the rain shadow that makes one side of a range a
-               forest and the other a dust bowl. Latitude tilts the whole thing
-               cold towards the north. */
-            else if (moist < 0.26f)             { r = 0.52f; g = 0.46f; b = 0.30f; }  /* dry steppe */
-            else if (moist > 0.66f)             { r = 0.24f; g = 0.31f; b = 0.15f; }  /* wet forest floor */
-            else if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f) {
-                r = 0.27f; g = 0.18f; b = 0.08f;                       /* bare dirt */
-            }
-            else {
-                /* patchy grass: the reference meadow shifts between yellow and
-                   blue green in patches several facets wide, and a single flat
-                   green is the giveaway that it is not hand-placed */
-                float patch = 0.5f + 0.5f * terrain_value_noise(x * 0.022f, z * 0.022f, seed + 5u);
-                /* scaled so the brightest facet (shade step x lighting ~1.95)
-                   lands on the reference's sunlit grass #a8c94e, not past it:
-                   a clipping green channel is what made the lawn neon */
-                r = 0.30f + 0.05f * patch;
-                g = 0.355f + 0.045f * patch;
-                b = 0.14f + 0.04f * (1.0f - patch);
-                /* cold ground is greyer and darker, warm ground yellower */
-                float warm = cold - 0.75f;
-                r += 0.05f * warm;
-                g -= 0.02f * warm;
-                b -= 0.05f * warm;
-            }
-
+            float rgb[3];
+            biome_rgb(x, z, h, slope, lat, rgb);
+            float r = rgb[0], g = rgb[1], b = rgb[2];
             if (trees_only) { r = 0.475f; g = 0.435f; b = 0.396f; }   /* ref ground */
 
             /* no directional shadow here any more: it is evaluated per pixel
@@ -1861,8 +1851,6 @@ void bake_colours(unsigned seed) {
             bake_r[i] = r * ao; bake_g[i] = g * ao; bake_b[i] = b * ao;
         }
     }
-
-
 }
 
 /* Runs on the builder thread, in this order: each bake feeds the next and the

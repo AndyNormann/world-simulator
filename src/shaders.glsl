@@ -157,7 +157,10 @@ void main(){
     // so fade the wave detail out with distance and let a flat, smooth surface
     // carry the Fresnel instead. Distance, not a mip chain: the sea is two
     // triangles, so there is nothing to filter.
-    float wfade = 1.0 - smoothstep(500.0, 2600.0, v_depth);
+    // 500-2600 was not tight enough: in the fade band the amplitude is still
+    // enough to alias, and the band covers most of the visible sea. Waves now
+    // exist only where a pixel is smaller than a wavelength.
+    float wfade = 1.0 - smoothstep(60.0, 400.0, v_depth);
     if (v_water > 0.5 && length(v_flow) > 0.5) {
         float f = dot(v_wpos.xz, v_flow) * 0.10 - u_sky.z * 1.3;
         float lake = step(1.5, length(v_flow));
@@ -174,10 +177,15 @@ void main(){
         vec3 V = normalize(v_wpos - u_cam_pos.xyz);
         float t = u_sky.z;
         vec2 q = v_wpos.xz;
-        vec3 N = normalize(vec3((0.050 * sin(q.x * 0.31 + t * 1.7)
+        // Two scales: a long swell (~1500 units) that never aliases and keeps
+        // the middle distance from being a mirror, plus the short chop that
+        // only exists close enough for a pixel to resolve it.
+        float lo_x = 0.030 * sin(q.x * 0.0042 + t * 0.21);
+        float lo_y = 0.030 * sin(q.y * 0.0036 - t * 0.17);
+        vec3 N = normalize(vec3(lo_x + (0.050 * sin(q.x * 0.31 + t * 1.7)
                               + 0.032 * sin(q.y * 0.57 - t * 2.3)) * wfade,
                                1.0,
-                               (0.050 * sin(q.y * 0.29 - t * 1.5)
+                               lo_y + (0.050 * sin(q.y * 0.29 - t * 1.5)
                               + 0.032 * sin(q.x * 0.63 + t * 1.9)) * wfade));
         float ndv = max(dot(N, -V), 0.0);
         float fres = 0.02 + 0.50 * pow(1.0 - ndv, 5.0);

@@ -24,25 +24,6 @@ static void put(int x, int y, float r, float g, float b) {
     p[2] = (unsigned char)(b * 255.0f);
 }
 
-/* Colour ramp for one land cell. Latitude comes in as t (0 = north pole of the
-   map, 1 = south), so the same height reads cold in the north and warm in the
-   south -- the first piece of the climate model, visible from above. */
-static void land_colour(float h, float slope, float lat, float *r, float *g, float *b) {
-    float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;       /* 1 at equator, 0 at edges */
-    float snowline = 620.0f - 260.0f * (1.0f - cold);   /* snow starts lower up north */
-    if (h > snowline)                { *r = 0.94f; *g = 0.95f; *b = 0.97f; return; }
-    if (slope > 1.35f || h > 430.0f) { *r = 0.42f; *g = 0.41f; *b = 0.40f; return; }
-    if (h < 8.0f)                    { *r = 0.76f; *g = 0.71f; *b = 0.52f; return; }
-    /* grass: greener and deeper towards the warm end */
-    float wet = 0.55f + 0.25f * cold;
-    *r = 0.32f - 0.10f * wet;
-    *g = 0.42f + 0.10f * wet;
-    *b = 0.22f + 0.04f * wet;
-    if (h > 240.0f) {                                   /* upland: drier, browner */
-        float k = (h - 240.0f) / 190.0f;
-        *r += 0.16f * k; *g += 0.06f * k; *b += 0.02f * k;
-    }
-}
 
 /* Land fraction, landmass count, rivers, lakes, relief percentiles. Printed as
    one line so a sweep can diff the numbers instead of the pictures. */
@@ -141,7 +122,12 @@ void worldmap(const char *path, int size) {
                 g = 0.20f + 0.14f * (1.0f - d);
                 b = 0.34f + 0.20f * (1.0f - d);
             } else {
-                land_colour(h, slope, lat, &r, &g, &b);
+                /* same palette the bake uses, so the map is evidence about the
+                   world the player walks in rather than a second opinion */
+                float rgb[3];
+                float ny = 1.0f / sqrtf(1.0f + slope * slope);
+                biome_rgb(x, z, h, 1.0f - ny, lat, rgb);
+                r = rgb[0]; g = rgb[1]; b = rgb[2];
             }
             float hw = 0.0f;
             if (h >= 0.0f) {

@@ -286,7 +286,7 @@ GV(const float SKY_TWILIGHT[3],{ 0.30f, 0.29f, 0.44f })
 GV(const float NIGHT_ZEN[3],{ 0.030f, 0.045f, 0.100f })
 GV(const float NIGHT_HOR[3],{ 0.075f, 0.095f, 0.170f })
 GV(const float NIGHT_SUN[3],{ 0.42f, 0.50f, 0.72f }) /* moonlight */
-GV(const float NIGHT_AMBS[3],{ 0.075f, 0.095f, 0.160f })
+GV(const float NIGHT_AMBS[3],{ 0.230f, 0.260f, 0.360f })
 GV(const float NIGHT_AMBG[3],{ 0.030f, 0.035f, 0.055f })
 GV(const float NIGHT_FILL[3],{ 0.020f, 0.030f, 0.060f })
 GV(int gfx_w,1280)
@@ -361,6 +361,7 @@ int chunk_tier(float d);
 int jobs_pending(void);
 void job_push(int ci, int tier);
 void bake_ambient(void);
+void biome_rgb(float x, float z, float h, float slope, float lat, float *out);
 void bake_colours(unsigned seed);
 void bake_environment(unsigned seed);
 void *builder_main(void *arg);
