@@ -2,20 +2,15 @@
 #define SOKOL_IMPL
 /* never grab focus on launch: see the note in sokol_app.h */
 #define SAPP_DONT_ACTIVATE
-#if defined(__APPLE__)
 #define SOKOL_METAL
-#elif defined(_WIN32)
-#define SOKOL_D3D11
-#else
-#define SOKOL_GLCORE33
-#endif
-#undef SOKOL_METAL
-#undef SOKOL_D3D11
-#define SOKOL_GLCORE
+/* sokol_app defines main(); this file has its own so `game shot` can run
+   without ever opening a window (see main() at the bottom) */
+#define SOKOL_NO_ENTRY
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_time.h"
 #include "sokol_glue.h"
+#include <Metal/Metal.h>
 #include "math3d.h"
 #include "terrain.h"
 #include <stdlib.h>
@@ -25,12 +20,9 @@
 #include <assert.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
-#if defined(__APPLE__)
-#include <OpenGL/gl3.h>
-#else
-#include <GL/gl.h>
-#endif
 #include <pthread.h>
+#include <stdarg.h>
+#include <math.h>
 
 #define N TERRAIN_N
 #define CELL (TERRAIN_WORLD / (float)(N - 1))
@@ -225,23 +217,6 @@ static void draw_distance_check(void) {
 #define PAL_VECS 15
 #define PAL_BYTES (PAL_VECS * 16)
 #define VS_BYTES 96                    /* mat4 mvp + vec4 wind + vec4 sun */
-#define PAL_UNIFORMS { \
-    { .glsl_name = "u_sun",       .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_sky",       .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_sun_col",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_sky_amb",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_gnd_amb",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_fill",      .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_zenith",    .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_horizon",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_sunglow",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_cam_fwd",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_cam_right", .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_cam_up",    .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_cam_pos",   .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_fog",       .type = SG_UNIFORMTYPE_FLOAT4 }, \
-    { .glsl_name = "u_load",      .type = SG_UNIFORMTYPE_FLOAT4 }, \
-}
 
 static sg_pipeline pip;
 static sg_pipeline sky_pip;
@@ -251,9 +226,10 @@ static sg_buffer vbuf;
 
 static unsigned terrain_seed = 1;
 static const char *shot_path = "screenshot.png";
-static int frame_count = 0;
-static int shot_frame = 0;
-static int want_shot = 0;
+static int headless = 0;       /* no window: render an offscreen texture */
+static int frame_count = 0;    /* frames rendered, for diagnostics only */
+static long sim_frames = 0;    /* fixed steps taken: animation and the clock
+                                  are derived from this, never from wall time */
 static float cam_x = 0.0f, cam_y = 60.0f, cam_z = -0.34f * TERRAIN_WORLD;
 static float yaw = 0.0f, pitch = -0.12f;
 static float tyaw = 0.0f, tpitch = -0.12f;
@@ -262,254 +238,15 @@ static int got_first_mouse = 0;   /* the warp on lock emits one bogus delta */
 static float build_ms = 0.0f;
 static float day_hours = 9.18f;    /* 0..24, sunrise at 6, sunset at 18 */
 static int time_fixed = 0;         /* --time given: do not advance */
-static float anim_time = 0.0f;     /* frame_count / 60, not wall clock: keeps
-                                      --shot reproducible */
+static float anim_time = 0.0f;     /* sim_frames / 60, not wall clock: keeps
+                                      captures reproducible */
 static int have_view = 0;      /* --yaw/--pitch/--cam given: don't auto-aim */
 /* debug: flat reference-grey ground so tree silhouettes can be measured with
    the same blob analysis as the reference image */
 static int trees_only = 0;
 static float peak_x = 0.0f, peak_y = 0.0f, peak_z = 0.0f;
 
-/* The palette block and the sky/colour helpers, shared by both fragment
-   shaders. Declared once: this used to be copy-pasted, so every new uniform had
-   to be added in three places and a miss only showed up as a black frame. */
-#define SKY_GLSL \
-    "uniform vec4 u_sun;\n" \
-    "uniform vec4 u_sky;\n" \
-    "uniform vec4 u_sun_col;\n" \
-    "uniform vec4 u_sky_amb;\n" \
-    "uniform vec4 u_gnd_amb;\n" \
-    "uniform vec4 u_fill;\n" \
-    "uniform vec4 u_zenith;\n" \
-    "uniform vec4 u_horizon;\n" \
-    "uniform vec4 u_sunglow;\n" \
-    "uniform vec4 u_cam_fwd;\n" \
-    "uniform vec4 u_cam_right;\n" \
-    "uniform vec4 u_cam_up;\n" \
-    "uniform vec4 u_cam_pos;\n" \
-    "uniform vec4 u_fog;\n" \
-    "uniform vec4 u_load;\n" \
-    "vec3 sky_col(float y){\n" \
-    "  return mix(u_horizon.rgb, u_zenith.rgb, pow(clamp(y, 0.0, 1.0), 0.85));\n" \
-    "}\n" \
-    "float hash1(vec3 p){\n" \
-    "  return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);\n" \
-    "}\n" \
-    "float dither(vec2 p){\n" \
-    "  return (hash1(vec3(p, 1.0)) - 0.5) / 255.0;\n" \
-    "}\n"
-
-static const char *vs_src =
-    "#version 330\n"
-    "layout(location=0) in vec3 pos;\n"
-    "layout(location=1) in vec3 nrm;\n"
-    "layout(location=2) in vec3 col;\n"
-    "layout(location=3) in vec2 anim;\n"
-    "layout(location=4) in vec2 flow;\n"
-    "layout(location=5) in vec4 sh0;\n"
-    "layout(location=6) in vec4 sh1;\n"
-    "layout(location=7) in vec4 b0;\n"
-    "layout(location=8) in vec4 b1;\n"
-    "layout(location=9) in vec4 b2;\n"
-    "layout(location=10) in vec4 b3;\n"
-    "layout(location=11) in vec4 b4;\n"
-    "layout(location=12) in vec4 b5;\n"
-    "uniform mat4 mvp;\n"
-    "uniform vec4 u_wind;\n"
-    "uniform vec4 u_sunv;\n"
-    "out vec3 v_col;\n"
-    "out vec3 v_nrm;\n"
-    "out float v_depth;\n"
-    "out vec2 v_suv;\n"
-    "out vec3 v_wpos;\n"
-    "out vec2 v_flow;\n"
-    "out vec4 v_sh0;\n"
-    "out vec4 v_sh1;\n"
-    "out vec3 v_bounce;\n"
-    "out float v_water;\n"
-    "void main(){\n"
-    "  vec3 p = pos;\n"
-    "  float w = anim.x;\n"
-    "  if (w > 2.5) {\n"
-    /* wing tips ride a flap, the whole bird drifts a little: |x| makes both
-       wings move together without a per-vertex side attribute */
-    "    float fl = sin(u_wind.w * 9.0 + anim.y * 43.0);\n"
-    "    p.y += fl * clamp(flow.x, -1.0, 1.0) * 0.85;\n"
-    "    float ph = anim.y * 6.2831853 + u_wind.w * 0.10;\n"
-    "    p.xz += vec2(cos(ph), sin(ph)) * 7.0;\n"
-    "  } else if (w < -1.5) {\n"
-    "    /* flat water: no sway, no drift */\n"
-    "  } else if (w < 0.0) {\n"
-    "    p.xz += u_wind.xy * (u_wind.w * 0.8 + anim.y * 40.0);\n"
-    "  } else if (w > 0.0) {\n"
-    "    float ph = anim.y * 6.2831853 + u_wind.w * 1.7;\n"
-    "    float sn = sin(ph);\n"
-    "    p.xz += u_wind.xy * ((0.85 * sn + 0.30) * u_wind.z * w * w);\n"
-    "    p.y  -= abs(sn) * 0.35 * u_wind.z * w * w;\n"
-    "  }\n"
-    /* Bounce: each sector of surrounding ground is weighted by how much sun
-       falls on it, so the face away from the sun is filled with the colour of
-       whatever is lit on the sunny side -- green off the meadow, white off the
-       snowfield, cool off the river. The constant 0.30 term stands for the sky
-       bounce, without it the sum dies when the sun is overhead. */
-    "  vec3 bs[8] = vec3[](vec3(b0.x,b0.y,b0.z), vec3(b0.w,b1.x,b1.y),\n"
-    "                      vec3(b1.z,b1.w,b2.x), vec3(b2.y,b2.z,b2.w),\n"
-    "                      vec3(b3.x,b3.y,b3.z), vec3(b3.w,b4.x,b4.y),\n"
-    "                      vec3(b4.z,b4.w,b5.x), vec3(b5.y,b5.z,b5.w));\n"
-    "  vec2 sd = u_sunv.xz; float sl = length(sd);\n"
-    "  sd = sl > 1e-4 ? sd / sl : vec2(1.0, 0.0);\n"
-    "  vec3 bal = vec3(0.0); float bw = 0.0;\n"
-    "  for (int k = 0; k < 8; k++) {\n"
-    "    float a = float(k) * 0.78539816;\n"
-    "    float w = 0.30 + max(dot(sd, vec2(cos(a), sin(a))), 0.0);\n"
-    "    bal += bs[k] * w; bw += w;\n"
-    "  }\n"
-    "  v_bounce = (bal / bw) * clamp(u_sunv.y, 0.0, 1.0);\n"
-    "  v_water = (anim.x < 0.5 && (length(flow) > 0.5 || anim.x < -1.5)) ? 1.0 : 0.0;\n"
-    "  v_col=col; v_nrm=nrm; v_wpos=pos; v_flow=flow; v_sh0=sh0; v_sh1=sh1;\n"
-    "  vec4 cp=mvp*vec4(p,1.0); v_depth=cp.w;\n"
-    "  v_suv=cp.xy/max(cp.w,1e-4)*0.5+0.5;\n"
-    "  gl_Position=cp;\n"
-    "}\n"
-    "";
-
-
-
-static const char *fs_src =
-    "#version 330\n"
-    SKY_GLSL
-    "in vec3 v_col;\n"
-    "in vec3 v_nrm;\n"
-    "in float v_depth;\n"
-    "in vec2 v_suv;\n"
-    "in vec3 v_wpos;\n"
-    "in vec2 v_flow;\n"
-    "in vec4 v_sh0;\n"
-    "in vec4 v_sh1;\n"
-    "in vec3 v_bounce;\n"
-    "in float v_water;\n"
-    "out vec4 frag;\n"
-    "void main(){\n"
-    "  vec3 n = normalize(v_nrm);\n"
-    "  vec3 L = u_sun.xyz;\n"
-    "  float ndl = max(dot(n, L), 0.0) * 0.65 + 0.35;\n"
-    /* shadow from the baked horizon: the sun is occluded when it sits below
-       the skyline in its own azimuth sector. Interpolating between the two
-       neighbouring sectors is what makes this continuous instead of stepping
-       every 45 degrees. */
-    "  float hs[8];\n"
-    "  hs[0]=v_sh0.x; hs[1]=v_sh0.y; hs[2]=v_sh0.z; hs[3]=v_sh0.w;\n"
-    "  hs[4]=v_sh1.x; hs[5]=v_sh1.y; hs[6]=v_sh1.z; hs[7]=v_sh1.w;\n"
-    "  for (int i = 0; i < 8; i++) hs[i] *= 1.6;\n"
-    "  float su = u_sky.x * 1.2732395;\n"
-    "  int k0 = int(floor(su)) & 7;\n"
-    "  int k1 = (k0 + 1) & 7;\n"
-    "  float occ = mix(hs[k0], hs[k1], fract(su));\n"
-    "  float vis = smoothstep(occ - 0.03, occ + 0.03, u_sun.w);\n"
-    "  vec3 amb = mix(u_gnd_amb.rgb, u_sky_amb.rgb, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));\n"
-    "  vec3 c = v_col * (amb + u_sun_col.rgb * ndl * 1.05 * vis);\n"
-    "  c += v_col * u_fill.rgb * max(0.0, -dot(n, L));\n"
-    /* bounce light: coloured, unshadowed, and added rather than multiplied by
-       the surface colour -- a green meadow must be able to light a brown rock */
-    "  c += v_bounce * u_sun_col.rgb * 0.30;\n"
-    "  if (v_water > 0.5 && length(v_flow) > 0.5) {\n"
-    "    float f = dot(v_wpos.xz, v_flow) * 0.10 - u_sky.z * 1.3;\n"
-    "    float lake = step(1.5, length(v_flow));\n"
-    "    c += vec3(0.10, 0.13, 0.13) * (0.5 + 0.5 * sin(f)) * (1.0 - lake);\n"
-    "    float g = hash1(floor(vec3(v_wpos.xz * 3.5, floor(u_sky.z * 2.0))));\n"
-    "    c += vec3(0.22) * step(0.9965, g) * (1.0 - smoothstep(220.0, 700.0, v_depth));\n"
-    "  }\n"
-    /* Water: a Fresnel mix between the body colour and the sky the surface
-       sees. The sky comes from the same function that draws the backdrop, so
-       the sea cannot drift out of tune with the sky above it, and at a grazing
-       angle it becomes a mirror -- which is what makes a sea read as water
-       rather than as blue paint. */
-    "  if (v_water > 0.5) {\n"
-    "    vec3 V = normalize(v_wpos - u_cam_pos.xyz);\n"
-    "    float t = u_sky.z;\n"
-    "    vec2 q = v_wpos.xz;\n"
-    "    vec3 N = normalize(vec3(0.050 * sin(q.x * 0.31 + t * 1.7)\n"
-    "                         + 0.032 * sin(q.y * 0.57 - t * 2.3),\n"
-    "                           1.0,\n"
-    "                           0.050 * sin(q.y * 0.29 - t * 1.5)\n"
-    "                         + 0.032 * sin(q.x * 0.63 + t * 1.9)));\n"
-    "    float ndv = max(dot(N, -V), 0.0);\n"
-    "    float fres = 0.02 + 0.50 * pow(1.0 - ndv, 5.0);\n"
-    "    vec3 R = reflect(V, N);\n"
-    "    vec3 refl = sky_col(sqrt(max(R.y, 0.0)));\n"
-    "    float glint = pow(max(dot(R, u_sun.xyz), 0.0), 90.0) * (1.0 - u_sky.y);\n"
-    "    c = c * (1.0 - fres) + refl * fres * 0.90 + u_sun_col.rgb * glint * 0.9;\n"
-    "  }\n"
-    "  c = clamp(c * 1.15, 0.0, 1.0);\n"
-    "  c = mix(c, c * c * (3.0 - 2.0 * c), 0.55);\n"
-    /* Aerial perspective: linear in distance to a full 1.0, so the last thing
-       in the world is the sky and not a silhouette of terrain. Linear because
-       at this facet size an exponential falloff is not readable; swap it in if
-       a longer draw distance ever makes the gradient itself visible. */
-    "  float fog = clamp((v_depth - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0);\n"
-    "  vec3 ray = normalize(u_cam_fwd.xyz\n"
-    "             + u_cam_right.xyz * ((v_suv.x * 2.0 - 1.0) * u_cam_fwd.w * u_cam_right.w)\n"
-    "             + u_cam_up.xyz    * ((v_suv.y * 2.0 - 1.0) * u_cam_fwd.w));\n"
-    /* in-scattered sunlight in the haze, which is what a shaft of god rays is
-       made of minus the shadowing -- free here because the ray and the sun are
-       already in hand, and no second pass or occlusion buffer is needed */
-    "  vec3 haze = sky_col(sqrt(max(ray.y, 0.0)));\n"
-    "  haze += u_sun_col.rgb * pow(max(dot(ray, u_sun.xyz), 0.0), 8.0) * 0.30 * (1.0 - u_sky.y);\n"
-    "  vec3 o = mix(c, haze, fog) + dither(gl_FragCoord.xy);\n"
-    "  frag = vec4(clamp(o, 0.0, 1.0), 1.0);\n"
-    "}\n"
-    "";
-
-/* Sky: gradient plus sun/moon disc and stars, drawn before the terrain with
-   depth writes off. The ray is rebuilt from the camera basis so the sun stays
-   put in the world when you turn. */
-static const char *sky_vs_src =
-    "#version 330\n"
-    "out vec2 v_uv;\n"
-    "void main(){\n"
-    "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-    "  v_uv = p;\n"
-    "  gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);\n"
-    "}\n"
-    "";
-
-static const char *sky_fs_src =
-    "#version 330\n"
-    SKY_GLSL
-    "in vec2 v_uv;\n"
-    "out vec4 frag;\n"
-    "void main(){\n"
-    "  float th = u_cam_fwd.w, asp = u_cam_right.w;\n"
-    "  vec3 ray = normalize(u_cam_fwd.xyz\n"
-    "             + u_cam_right.xyz * ((v_uv.x * 2.0 - 1.0) * th * asp)\n"
-    "             + u_cam_up.xyz    * ((v_uv.y * 2.0 - 1.0) * th));\n"
-    "  vec3 c = sky_col(sqrt(max(ray.y, 0.0)));\n"
-    "  float sd = max(dot(ray, u_sun.xyz), 0.0);\n"
-    "  c += u_sun_col.rgb * (smoothstep(0.99955, 0.99975, sd) * u_sunglow.x\n"
-    "                      + pow(sd, 24.0) * u_sunglow.y);\n"
-    "  if (u_sky.y > 0.01) {\n"
-    "    vec3 sp = ray * 260.0;\n"
-    "    vec3 cell = floor(sp);\n"
-    "    vec3 fr = fract(sp) - 0.5;\n"
-    "    float st = step(0.9975, hash1(cell)) * smoothstep(0.45, 0.0, length(fr.xy))\n"
-    "             * smoothstep(0.02, 0.20, ray.y);\n"
-    "    c += vec3(0.92, 0.95, 1.0) * st * u_sky.y;\n"
-    "  }\n"
-    /* Loading: until every chunk is uploaded the world is drawn only as sky,
-       so the first thing on screen is a deliberate frame instead of terrain
-       assembling itself. u_load = (progress, 1/w, 1/h, active). */
-    "  if (u_load.w > 0.5) {\n"
-    "    c *= 0.28;\n"
-    "    vec2 q = gl_FragCoord.xy * u_load.yz;\n"
-    "    float y = q.y;\n"
-    "    if (y > 0.045 && y < 0.062 && q.x > 0.30 && q.x < 0.70)\n"
-    "      c = vec3(0.13, 0.14, 0.15);\n"
-    "    if (y > 0.045 && y < 0.062 && q.x > 0.30 && q.x < 0.30 + 0.40 * u_load.x)\n"
-    "      c = vec3(0.96, 0.93, 0.86);\n"
-    "  }\n"
-    "  frag = vec4(clamp(c + dither(gl_FragCoord.xy), 0.0, 1.0), 1.0);\n"
-    "}\n"
-    "";
+#include "shaders.h"   /* generated by tools/shaders.sh -- never edit by hand */
 
 /* bilinear height lookup on the eroded grid, for the sun ray-march */
 static float sample_height(float x, float z) {
@@ -2437,7 +2174,7 @@ static void build_terrain(unsigned seed) {
     decor_words = vcount;
 
     start_streamer(seed);
-    if (shot_frame > 0) {
+    if (headless) {
         int lit = 0, rn = 0;
         double relief = 0.0;
         lit = N * N - (shadowed_pct() * N * N) / 100;
@@ -2752,8 +2489,102 @@ static void build_palette(float hours, float *pal) {
     for (int i = 0; i < PAL_VECS * 4; i++) pal[i] = sets[i / 4][i % 4];
 }
 
+/* --- graphics backend ------------------------------------------------------
+   Two ways in: sokol_app owns a window and its Metal drawable (the game), or
+   this file owns a Metal device and renders into an offscreen texture (shot /
+   replay). Nothing between here and main() calls sapp_*, so the second path
+   never touches a window or the window server. */
+static int gfx_w = 1280, gfx_h = 720;
+static const int GFX_MSAA = 4;     /* silhouettes against sky are the aliasing */
+static id<MTLDevice> mtl_device = nil;
+static id<MTLCommandQueue> mtl_queue = nil;
+static id<MTLTexture> mtl_resolve = nil;   /* ours, so readback needs no digging */
+static sg_image hd_color, hd_resolve, hd_depth;
+static sg_view hd_color_view, hd_resolve_view, hd_depth_view;
+
+static void headless_gfx_setup(void) {
+    mtl_device = MTLCreateSystemDefaultDevice();
+    if (!mtl_device) { fprintf(stderr, "headless: no Metal device\n"); exit(1); }
+    /* MTLTexture properties are readonly on a live object, so the descriptor is
+       what gets configured; MSAA targets have to say so up front */
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:(NSUInteger)gfx_w height:(NSUInteger)gfx_h mipmapped:NO];
+    td.textureType = MTLTextureType2DMultisample;
+    td.sampleCount = (NSUInteger)GFX_MSAA;
+    td.usage = MTLTextureUsageRenderTarget;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> color = [mtl_device newTextureWithDescriptor:td];
+
+    MTLTextureDescriptor *rd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:(NSUInteger)gfx_w height:(NSUInteger)gfx_h mipmapped:NO];
+    rd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    rd.storageMode = MTLStorageModePrivate;   /* read back via a blit */
+    mtl_resolve = [mtl_device newTextureWithDescriptor:rd];
+
+    MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+        width:(NSUInteger)gfx_w height:(NSUInteger)gfx_h mipmapped:NO];
+    dd.textureType = MTLTextureType2DMultisample;
+    dd.sampleCount = (NSUInteger)GFX_MSAA;
+    dd.usage = MTLTextureUsageRenderTarget;
+    dd.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> depth = [mtl_device newTextureWithDescriptor:dd];
+    mtl_queue = [mtl_device newCommandQueue];
+
+    sg_setup(&(sg_desc){
+        .environment = {
+            .defaults = { .color_format = SG_PIXELFORMAT_RGBA8,
+                          .depth_format = SG_PIXELFORMAT_DEPTH,
+                          .sample_count = GFX_MSAA },
+            .metal = { .device = (const void*)mtl_device },
+        },
+        .logger = { .func = game_logger },
+        .buffer_pool_size = 2048,
+    });
+    hd_color   = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
+                    .pixel_format = SG_PIXELFORMAT_RGBA8, .sample_count = GFX_MSAA,
+                    .usage.color_attachment = true,
+                    .mtl_texture = (const void*)color, .label = "hd-color" });
+    /* sample_count is explicit: sg_environment.defaults.sample_count is 4, so
+       an unset one would ask for a multisampled resolve target */
+    hd_resolve = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
+                    .pixel_format = SG_PIXELFORMAT_RGBA8, .sample_count = 1,
+                    .usage.resolve_attachment = true, .usage.copy_src = true,
+                    .mtl_texture = (const void*)mtl_resolve, .label = "hd-resolve" });
+    hd_depth   = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
+                    .pixel_format = SG_PIXELFORMAT_DEPTH, .sample_count = GFX_MSAA,
+                    .usage.depth_stencil_attachment = true,
+                    .mtl_texture = (const void*)depth, .label = "hd-depth" });
+    hd_color_view   = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hd_color } });
+    hd_resolve_view = sg_make_view(&(sg_view_desc){ .resolve_attachment = { .image = hd_resolve } });
+    hd_depth_view   = sg_make_view(&(sg_view_desc){ .depth_stencil_attachment = { .image = hd_depth } });
+}
+
+/* Copy the resolved frame into `dst` (RGBA8, row-major, top-left origin).
+   Metal's render target origin is already top-left, so unlike the old
+   glReadPixels path there is no flip. */
+static void headless_readback(unsigned char *dst) {
+    NSUInteger row = (NSUInteger)gfx_w * 4;
+    id<MTLBuffer> buf = [mtl_device newBufferWithLength:row * (NSUInteger)gfx_h
+                                                options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [mtl_queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:mtl_resolve sourceSlice:0 sourceLevel:0
+             sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake((NSUInteger)gfx_w, (NSUInteger)gfx_h, 1)
+                 toBuffer:buf destinationOffset:0
+        destinationBytesPerRow:row destinationBytesPerImage:row * (NSUInteger)gfx_h];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    memcpy(dst, [buf contents], (size_t)row * (size_t)gfx_h);
+    [buf release];
+}
+
 static void init(void) {
     stm_setup();
+    if (headless) {
+        headless_gfx_setup();
+    } else {
     /* Without a logger sokol PANICs by calling abort() with no output at all,
        which is indistinguishable from a crash in our own code. Every validation
        failure now names itself and the line it came from. */
@@ -2765,6 +2596,7 @@ static void init(void) {
            then aborts inside sg_apply_bindings on the invalid handle. */
         .buffer_pool_size = 2048,
     });
+    }
     terrain_check_resolution(CELL);
     draw_distance_check();
     uint64_t t0 = stm_now();
@@ -2775,47 +2607,31 @@ static void init(void) {
 
     vbuf = sg_make_buffer(&(sg_buffer_desc){
         .data = { .ptr = verts, .size = (size_t)decor_words * sizeof(float) } });
-    sg_shader shd = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source = vs_src,
-        .fragment_func.source = fs_src,
-        /* slot 0 = the shared palette, slot 1 = the per-frame vertex data */
-        .uniform_blocks[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-            .size = PAL_BYTES, .glsl_uniforms = PAL_UNIFORMS },
-        .uniform_blocks[1] = { .stage = SG_SHADERSTAGE_VERTEX, .size = VS_BYTES,
-            .glsl_uniforms = {
-                { .glsl_name = "mvp", .type = SG_UNIFORMTYPE_MAT4 },
-                { .glsl_name = "u_wind", .type = SG_UNIFORMTYPE_FLOAT4 },
-                { .glsl_name = "u_sunv", .type = SG_UNIFORMTYPE_FLOAT4 } } },
-    });
+    sg_shader shd = sg_make_shader(terrain_shader_desc(sg_query_backend()));
     pip = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd,
         .index_type = SG_INDEXTYPE_NONE,   /* flat shading: vertices are not shared */
         .layout.buffers[0].stride = VERT_FLOATS * (int)sizeof(float),
-        .layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT3,   /* pos    */
-        .layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT3,   /* normal */
-        .layout.attrs[2].format = SG_VERTEXFORMAT_FLOAT3,   /* colour */
-        .layout.attrs[3].format = SG_VERTEXFORMAT_FLOAT2,   /* anim: sway w, phase */
-        .layout.attrs[4].format = SG_VERTEXFORMAT_FLOAT2,   /* flow: river tangent  */
-        .layout.attrs[5].format = SG_VERTEXFORMAT_UBYTE4N,  /* horizon sectors 0-3  */
-        .layout.attrs[6].format = SG_VERTEXFORMAT_UBYTE4N,  /* horizon sectors 4-7  */
-        .layout.attrs[7].format = SG_VERTEXFORMAT_UBYTE4N,  /* bounce, r0 g0 b0 r1  */
-        .layout.attrs[8].format = SG_VERTEXFORMAT_UBYTE4N,  /* bounce, g1 b1 r2 g2  */
-        .layout.attrs[9].format = SG_VERTEXFORMAT_UBYTE4N,  /* bounce, b2 r3 g3 b3  */
-        .layout.attrs[10].format = SG_VERTEXFORMAT_UBYTE4N, /* bounce, r4 g4 b4 r5  */
-        .layout.attrs[11].format = SG_VERTEXFORMAT_UBYTE4N, /* bounce, g5 b5 r6 g6  */
-        .layout.attrs[12].format = SG_VERTEXFORMAT_UBYTE4N, /* bounce, b6 r7 g7 b7  */
+        .layout.attrs[ATTR_terrain_pos ].format = SG_VERTEXFORMAT_FLOAT3,
+        .layout.attrs[ATTR_terrain_nrm ].format = SG_VERTEXFORMAT_FLOAT3,
+        .layout.attrs[ATTR_terrain_col ].format = SG_VERTEXFORMAT_FLOAT3,
+        .layout.attrs[ATTR_terrain_anim].format = SG_VERTEXFORMAT_FLOAT2,
+        .layout.attrs[ATTR_terrain_flow].format = SG_VERTEXFORMAT_FLOAT2,
+        .layout.attrs[ATTR_terrain_sh0 ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_sh1 ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_b0  ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_b1  ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_b2  ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_b3  ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_b4  ].format = SG_VERTEXFORMAT_UBYTE4N,
+        .layout.attrs[ATTR_terrain_b5  ].format = SG_VERTEXFORMAT_UBYTE4N,
         /* depth unset defaults to ALWAYS/no-write, which paints over itself */
         .depth.compare = SG_COMPAREFUNC_LESS_EQUAL,
         .depth.write_enabled = true,
     });
     bindings.vertex_buffers[0] = vbuf;
 
-    sg_shader sky_shd = sg_make_shader(&(sg_shader_desc){
-        .vertex_func.source = sky_vs_src,
-        .fragment_func.source = sky_fs_src,
-        .uniform_blocks[0] = { .stage = SG_SHADERSTAGE_FRAGMENT,
-            .size = PAL_BYTES, .glsl_uniforms = PAL_UNIFORMS },
-    });
+    sg_shader sky_shd = sg_make_shader(sky_shader_desc(sg_query_backend()));
     sky_pip = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = sky_shd,
         .layout.buffers[0].stride = 0,
@@ -2828,20 +2644,30 @@ static void init(void) {
        background would hijack the pointer the user is still using */
 }
 
-static void frame(void) {
-    static uint64_t last = 0;
+/* One fixed timestep of simulation. No GPU calls and no wall clock: the same
+   scripted input produces the same camera path on any machine, which is what
+   makes a replay a test rather than a different program. */
+#define SMOOTH_K 17.0f    /* 1-exp(-k/60) == the old 0.25 per-frame lerp */
+static float move_t = 0.0f, move_dur = 0.0f;      /* active scripted move, s */
+static float move_x0, move_y0, move_z0, move_x1, move_y1, move_z1;
+static void sim_step(float dt) {
+    yaw += (tyaw - yaw) * (1.0f - expf(-SMOOTH_K * dt));
+    pitch += (tpitch - pitch) * (1.0f - expf(-SMOOTH_K * dt));
 
-    uint64_t now = stm_now();
-    float dt = last ? (float)stm_sec(now - last) : 0.016f;
-    last = now;
-    if (dt > 0.1f) dt = 0.1f;
+    if (move_dur > 0.0f) {
+        move_t += dt;
+        float k = move_t / move_dur;
+        if (k > 1.0f) k = 1.0f;
+        cam_x = move_x0 + (move_x1 - move_x0) * k;
+        cam_y = move_y0 + (move_y1 - move_y0) * k;
+        cam_z = move_z0 + (move_z1 - move_z0) * k;
+        if (k >= 1.0f) { move_dur = 0.0f; move_t = 0.0f; }
+    }
 
-    yaw += (tyaw - yaw) * 0.25f;
-    pitch += (tpitch - pitch) * 0.25f;
-
-    anim_time = (float)frame_count / 60.0f;
+    sim_frames++;
+    anim_time = (float)sim_frames / 60.0f;
     /* one in-game hour per real minute */
-    if (!time_fixed && shot_frame == 0) {
+    if (!time_fixed) {
         day_hours += dt * (24.0f / 1440.0f);
         if (day_hours >= 24.0f) day_hours -= 24.0f;
     }
@@ -2862,10 +2688,19 @@ static void frame(void) {
 
     float ground = terrain_height(cam_x, cam_z, terrain_seed) + 2.0f;
     if (cam_y < ground) cam_y = ground;
+}
+
+/* Everything that touches the GPU. Takes the size explicitly so the same code
+   serves a window and an offscreen texture. */
+static void render(int w, int h) {
+    float fx = sinf(yaw) * cosf(pitch);
+    float fy = sinf(pitch);
+    float fz = cosf(yaw) * cosf(pitch);
+    float rx = -cosf(yaw), rz = sinf(yaw);
 
     float view[16], proj[16], mvp[16];
     mat4_lookat(view, cam_x, cam_y, cam_z, cam_x+fx, cam_y+fy, cam_z+fz);
-    mat4_perspective(proj, 1.0f, (float)sapp_width()/(float)sapp_height(), 0.1f, FAR_PLANE);
+    mat4_perspective(proj, 1.0f, (float)w/(float)h, 0.1f, FAR_PLANE);
     mat4_mul(mvp, proj, view);
 
     /* --- day/night palette + animation state, uploaded as one blob --- */
@@ -2877,7 +2712,7 @@ static void frame(void) {
         const float tan_half = 0.54630249f;   /* tan(0.5 * fovy), fovy = 1.0 */
         pal[9*4+0] = fx; pal[9*4+1] = fy; pal[9*4+2] = fz; pal[9*4+3] = tan_half;
         pal[10*4+0] = -cosf(yaw); pal[10*4+1] = 0.0f; pal[10*4+2] = sinf(yaw);
-        pal[10*4+3] = (float)sapp_width()/(float)sapp_height();
+        pal[10*4+3] = (float)w/(float)h;
         pal[11*4+0] = -sinf(yaw)*sinf(pitch);
         pal[11*4+1] = cosf(pitch);
         pal[11*4+2] = -cosf(yaw)*sinf(pitch);
@@ -2946,11 +2781,19 @@ static void frame(void) {
     if (loaded && build_async_ms == 0.0 && builder_started)
         build_async_ms = stm_sec(stm_now() - builder_t0) * 1000.0;
     pal[14*4+0] = NCHUNKS ? (float)nchunks_ready() / (float)NCHUNKS : 1.0f;
-    pal[14*4+1] = 1.0f / (float)sapp_width();
-    pal[14*4+2] = 1.0f / (float)sapp_height();
+    pal[14*4+1] = 1.0f / (float)w;
+    pal[14*4+2] = 1.0f / (float)h;
     pal[14*4+3] = loaded ? 0.0f : 1.0f;
 
-    sg_begin_pass(&(sg_pass){ .action = pass_action, .swapchain = sglue_swapchain() });
+    /* one pass, two ways to name the attachments: a window drawable, or our
+       own textures when there is no window at all */
+    if (headless) {
+        sg_begin_pass(&(sg_pass){ .action = pass_action, .attachments = {
+            .colors[0] = hd_color_view, .resolves[0] = hd_resolve_view,
+            .depth_stencil = hd_depth_view } });
+    } else {
+        sg_begin_pass(&(sg_pass){ .action = pass_action, .swapchain = sglue_swapchain() });
+    }
     sg_apply_pipeline(sky_pip);
     sg_apply_uniforms(0, &(sg_range){ .ptr = pal, .size = sizeof(pal) });
     sg_draw(0, 3, 1);
@@ -2970,7 +2813,7 @@ static void frame(void) {
            screen: a sphere-vs-frustum test using the basis already in hand */
         float ux = -sinf(yaw) * sinf(pitch), uy = cosf(pitch), uz = -cosf(yaw) * sinf(pitch);
         const float tanv = 0.54630249f;      /* tan(0.5 * fovy), fovy = 1.0 */
-        float tanh_h = tanv * (float)sapp_width() / (float)sapp_height();
+        float tanh_h = tanv * (float)w / (float)h;
         chunks_drawn = 0;
         for (int i = 0; i < NCHUNKS; i++) {
             if (chunks[i].state != CHUNK_READY || chunks[i].words == 0) continue;
@@ -2995,88 +2838,29 @@ static void frame(void) {
     sg_apply_bindings(&bindings);
     sg_draw(0, decor_words / VERT_FLOATS, 1);
     frame_count++;
-    if (want_shot && shot_frame == 0) {   /* P: capture next frame, keep running */
-        shot_frame = frame_count + 1;
-        want_shot = 0;
-    }
-    if (shot_frame > 0 && frame_count >= shot_frame && world_ready()) {
-        /* ponytail: must read inside the pass, before swap, or we get the
-           cleared back buffer instead of the rendered frame */
-        int w = sapp_width(), h = sapp_height();
-        /* the restored window size varies per run (set by macOS, not us), so
-           crop to a fixed 16:9 centre region: every capture is comparable */
-        int cw = h * 16 / 9, ch = h;
-        if (cw > w) { cw = w; ch = w * 9 / 16; }
-        int x0 = (w - cw) / 2, y0 = (h - ch) / 2;
-        w = cw; h = ch;
-        fprintf(stderr, "shot seed=%u size=%dx%d cam=%.1f,%.1f,%.1f yaw=%.2f pitch=%.2f\n",
-                terrain_seed, w, h, cam_x, cam_y, cam_z, yaw, pitch);
-        unsigned char *buf = (unsigned char*)malloc((size_t)w*h*4);
-        glReadPixels(x0,y0,w,h,GL_RGBA,GL_UNSIGNED_BYTE,buf);
-        unsigned char *tmp = (unsigned char*)malloc((size_t)w*4);
-        for(int y=0;y<h/2;y++){ memcpy(tmp,buf+(size_t)y*w*4,(size_t)w*4); memcpy(buf+(size_t)y*w*4,buf+(size_t)(h-1-y)*w*4,(size_t)w*4); memcpy(buf+(size_t)(h-1-y)*w*4,tmp,(size_t)w*4); }
-        free(tmp);
-        stbi_write_png(shot_path, w, h, 4, buf, w*4);
-        free(buf);
-        /* `open -g` detaches stderr, so diagnostics go in a sidecar file */
-        size_t plen = strlen(shot_path);
-        char *logpath = (char*)malloc(plen + 5);
-        memcpy(logpath, shot_path, plen);
-        memcpy(logpath + plen, ".txt", 5);
-        FILE *lf = fopen(logpath, "w");
-        float lo = 1e9f, hi = -1e9f;
-        for (int i = 0; i < N * N; i++) {
-            if (heights[i] < lo) lo = heights[i];
-            if (heights[i] > hi) hi = heights[i];
-        }
-        if (lf) {
-            fprintf(lf, "seed=%u size=%dx%d cam=%.1f,%.1f,%.1f yaw=%.2f pitch=%.2f\n",
-                    terrain_seed, w, h, cam_x, cam_y, cam_z, yaw, pitch);
-            fprintf(lf, "height=%.1f..%.1f  shadowed=%d%%  trees=%d  build=%.0f+%.0fms  peak=%.0f,%.0f,%.0f  hour=%.2f\n",
-                    lo, hi, shadowed_pct(), tree_count, build_ms, build_async_ms, peak_x, peak_y, peak_z, day_hours);
-            fprintf(lf, "chunks: %d of %d ready, %d drawn\n", nchunks_ready(), NCHUNKS, chunks_drawn);
-            fprintf(lf, "depth_range=%.1f..%.1f\n", lo, hi);
-            fprintf(lf, "mesh: %d points, %d triangles, %d facets\n",
-                    mesh_pts, mesh_tris, mesh_facets);
-            if (seg_n > 0)
-                fprintf(lf, "rivers=%d  segments=%d  level %.1f..%.1f\n",
-                        river_count, seg_n, river_hi, river_lo);
-            else
-                fprintf(lf, "rivers=none\n");
-
-            fclose(lf);
-        }
-        free(logpath);
-        /* also dump the heightfield itself so the shape can be inspected */
-        {
-            size_t plen2 = strlen(shot_path);
-            char *hmpath = (char*)malloc(plen2 + 8);
-            memcpy(hmpath, shot_path, plen2);
-            memcpy(hmpath + plen2, ".hm.png", 8);
-            unsigned char *hm = (unsigned char*)malloc((size_t)N * N * 4);
-            for (int i = 0; i < N * N; i++) {
-                float v = (heights[i] - lo) / (hi - lo + 1e-3f);
-                if (v < 0.0f) v = 0.0f;
-                if (v > 1.0f) v = 1.0f;
-                unsigned char c = (unsigned char)(v * 255.0f);
-                hm[i*4+0] = c; hm[i*4+1] = c; hm[i*4+2] = c; hm[i*4+3] = 255;
-            }
-            stbi_write_png(hmpath, N, N, 4, hm, N * 4);
-            free(hm);
-            free(hmpath);
-        }
-    }
     sg_end_pass();
     sg_commit();
-    if (shot_frame > 0 && frame_count >= shot_frame && world_ready()) sapp_request_quit();
+}
+
+/* The windowed path: real elapsed time in, fixed sim steps out, one render.
+   A frame that took 100ms runs six steps instead of one, so movement speed does
+   not depend on the refresh rate (and a replay at 60Hz matches what is on
+   screen). */
+#define MAX_CATCHUP 5
+static void frame(void) {
+    static uint64_t last = 0;
+    uint64_t now = stm_now();
+    float dt = last ? (float)stm_sec(now - last) : (1.0f / 60.0f);
+    last = now;
+    if (dt > 0.1f) dt = 0.1f;
+    int steps = (int)(dt * 60.0f + 0.5f);
+    if (steps < 1) steps = 1;
+    if (steps > MAX_CATCHUP) steps = MAX_CATCHUP;
+    for (int i = 0; i < steps; i++) sim_step(1.0f / 60.0f);
+    render(sapp_width(), sapp_height());
 }
 
 static void event(const sapp_event *ev) {
-    if (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_P) {
-        want_shot = 1;
-        return;
-    }
-    if (shot_frame > 0) return;   /* headless capture: ignore all input */
     switch (ev->type) {
     case SAPP_EVENTTYPE_KEY_DOWN:
         if (ev->key_code == SAPP_KEYCODE_ESCAPE) sapp_request_quit();
@@ -3112,17 +2896,389 @@ static void event(const sapp_event *ev) {
     default: break;
     }
 }
-static void cleanup(void) {
+
+static void shutdown_gfx(void) {
     stop_streamer();
     sg_shutdown();
 }
 
-sapp_desc sokol_main(int argc, char *argv[]) {
-    terrain_seed = (unsigned)time(NULL);
+static void cleanup(void) {
+    shutdown_gfx();
+}
+
+/* --- capture ---------------------------------------------------------------
+   One frame out to a PNG plus a sidecar of numbers, blocking until the
+   streamer has caught the camera up. `dt` is never advanced while waiting:
+   otherwise a busy machine would render a different camera than an idle one
+   and the same replay would produce two different images. */
+#define SHOT_MAX_PUMP 6000    /* frames of upload pumping before we give up */
+
+static unsigned char *cap_buf = NULL;   /* one allocation, large enough for any
+                                           shot in a replay, reused */
+
+static void shrink_to(unsigned char *dst, int dw, int dh,
+                      const unsigned char *src, int sw, int sh) {
+    /* box filter: every destination pixel is the mean of its source rect.
+       Good enough for a model's eyes and no resize library needed. */
+    for (int y = 0; y < dh; y++) {
+        int y0 = (int)((long)y * sh / dh), y1 = (int)((long)(y + 1) * sh / dh);
+        if (y1 <= y0) y1 = y0 + 1;
+        for (int x = 0; x < dw; x++) {
+            int x0 = (int)((long)x * sw / dw), x1 = (int)((long)(x + 1) * sw / dw);
+            if (x1 <= x0) x1 = x0 + 1;
+            int n = 0, r = 0, g = 0, b = 0, a = 0;
+            for (int yy = y0; yy < y1 && yy < sh; yy++)
+                for (int xx = x0; xx < x1 && xx < sw; xx++) {
+                    const unsigned char *q = src + ((size_t)yy * sw + xx) * 4;
+                    r += q[0]; g += q[1]; b += q[2]; a += q[3]; n++;
+                }
+            unsigned char *o = dst + ((size_t)y * dw + x) * 4;
+            o[0] = (unsigned char)(r / n); o[1] = (unsigned char)(g / n);
+            o[2] = (unsigned char)(b / n); o[3] = (unsigned char)(a / n);
+        }
+    }
+}
+
+static char *with_suffix(const char *path, const char *suffix) {
+    size_t n = strlen(path), m = strlen(suffix);
+    char *o = (char*)malloc(n + m + 1);
+    memcpy(o, path, n); memcpy(o + n, suffix, m + 1);
+    return o;
+}
+
+static void capture(const char *path) {
+    /* do/while, not while: before the first render nothing is queued yet, so
+       world_ready() is trivially true and the capture would photograph an
+       empty world. The first render is what asks the streamer for chunks. */
+    int pumped = 0;
+    do {
+        render(gfx_w, gfx_h);
+        if (++pumped > SHOT_MAX_PUMP) {
+            fprintf(stderr, "capture %s: world never became ready\n", path);
+            exit(1);
+        }
+    } while (!world_ready());
+    size_t bytes = (size_t)gfx_w * (size_t)gfx_h * 4;
+    if (!cap_buf) cap_buf = (unsigned char*)malloc(bytes);
+    headless_readback(cap_buf);
+    stbi_write_png(path, gfx_w, gfx_h, 4, cap_buf, gfx_w * 4);
+
+    /* the downscale is written here rather than in a second command: an agent
+       that has to remember it will feed a 1280px image to the model instead */
+    {
+        int dw = 900, dh = gfx_h * dw / gfx_w;
+        if (dh < 1) dh = 1;
+        unsigned char *small = (unsigned char*)malloc((size_t)dw * dh * 4);
+        shrink_to(small, dw, dh, cap_buf, gfx_w, gfx_h);
+        char *sp = with_suffix(path, ".small.png");
+        stbi_write_png(sp, dw, dh, 4, small, dw * 4);
+        free(sp); free(small);
+    }
+    /* heightfield dump: the shape is often the thing under test, and it is far
+       more readable as an image than as a metric */
+    {
+        float lo = 1e9f, hi = -1e9f;
+        for (int i = 0; i < N * N; i++) {
+            if (heights[i] < lo) lo = heights[i];
+            if (heights[i] > hi) hi = heights[i];
+        }
+        unsigned char *hm = (unsigned char*)malloc((size_t)N * N * 4);
+        for (int i = 0; i < N * N; i++) {
+            float v = (heights[i] - lo) / (hi - lo + 1e-3f);
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            unsigned char c = (unsigned char)(v * 255.0f);
+            hm[i*4+0] = c; hm[i*4+1] = c; hm[i*4+2] = c; hm[i*4+3] = 255;
+        }
+        char *hp = with_suffix(path, ".hm.png");
+        stbi_write_png(hp, N, N, 4, hm, N * 4);
+        free(hp); free(hm);
+    }
+
+    float lo = 1e9f, hi = -1e9f;
+    for (int i = 0; i < N * N; i++) {
+        if (heights[i] < lo) lo = heights[i];
+        if (heights[i] > hi) hi = heights[i];
+    }
+    /* stdout, not a sidecar file: nothing detaches stderr any more now that
+       there is no `open -g` in front of the process */
+    printf("shot %s\n", path);
+    printf("seed=%u size=%dx%d cam=%.1f,%.1f,%.1f yaw=%.2f pitch=%.2f hour=%.2f\n",
+           terrain_seed, gfx_w, gfx_h, cam_x, cam_y, cam_z, yaw, pitch, day_hours);
+    printf("height=%.1f..%.1f  shadowed=%d%%  trees=%d  build=%.0f+%.0fms  peak=%.0f,%.0f,%.0f\n",
+           lo, hi, shadowed_pct(), tree_count, build_ms, build_async_ms,
+           peak_x, peak_y, peak_z);
+    printf("chunks: %d of %d ready, %d drawn\n", nchunks_ready(), NCHUNKS, chunks_drawn);
+    printf("mesh: %d points, %d triangles, %d facets\n", mesh_pts, mesh_tris, mesh_facets);
+    if (seg_n > 0)
+        printf("rivers=%d  segments=%d  level %.1f..%.1f\n", river_count, seg_n, river_hi, river_lo);
+    else
+        printf("rivers=none\n");
+    fflush(stdout);
+}
+
+/* --- replay -----------------------------------------------------------------
+   A line-oriented script. Same sim_step() the game uses, so a replay is a test
+   of the real thing and not of a second implementation. Format and rationale
+   are documented in AGENTS.md; keep the two in step. */
+static double replay_now = 0.0;     /* sim seconds since the script started */
+static int render_ok = 1;           /* 0 in `dump` mode: sim only, no GPU */
+static int replay_line = 0;
+static const char *replay_name = "replay";
+
+static void replay_die(const char *fmt, ...) {
+    va_list ap;
+    fprintf(stderr, "%s:%d: ", replay_name, replay_line);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+static void advance(float seconds) {
+    int n = (int)lroundf(seconds * 60.0f);
+    if (n < 0) n = 0;
+    for (int i = 0; i < n; i++) sim_step(1.0f / 60.0f);
+    replay_now += (double)n / 60.0;
+}
+
+static void key_by_name(const char *name, int down) {
+    int code = -1;
+    if (!strcmp(name, "W")) code = SAPP_KEYCODE_W;
+    else if (!strcmp(name, "A")) code = SAPP_KEYCODE_A;
+    else if (!strcmp(name, "S")) code = SAPP_KEYCODE_S;
+    else if (!strcmp(name, "D")) code = SAPP_KEYCODE_D;
+    else if (!strcmp(name, "Q")) code = SAPP_KEYCODE_Q;
+    else if (!strcmp(name, "E")) code = SAPP_KEYCODE_E;
+    else if (!strcmp(name, "SHIFT")) code = SAPP_KEYCODE_LEFT_SHIFT;
+    else replay_die("unknown key '%s'", name);
+    keys[code] = down;
+}
+
+/* Render-derived counters cannot be asserted in `dump` mode, which never calls
+   render(): they would be zero and every script would need two variants. */
+static int key_needs_render(const char *field) {
+    return !strcmp(field, "tris") || !strcmp(field, "chunks_drawn");
+}
+
+static float key_state(const char *field) {
+    if (!strcmp(field, "cam_x")) return cam_x;
+    if (!strcmp(field, "cam_y")) return cam_y;
+    if (!strcmp(field, "cam_z")) return cam_z;
+    if (!strcmp(field, "yaw")) return yaw;
+    if (!strcmp(field, "pitch")) return pitch;
+    if (!strcmp(field, "hour")) return day_hours;
+    if (!strcmp(field, "chunks_drawn")) return (float)chunks_drawn;
+    if (!strcmp(field, "trees")) return (float)tree_count;
+    if (!strcmp(field, "shadowed_pct")) return (float)shadowed_pct();
+    if (!strcmp(field, "tris")) return (float)mesh_tris;
+    replay_die("assert: unknown field '%s'", field);
+    return 0.0f;
+}
+
+/* `assert field OP value` with OP one of > < >= <= == != */
+static void replay_assert(const char *rest) {
+    char field[64], op[4];
+    double want;
+    if (sscanf(rest, "%63s %3s %lf", field, op, &want) != 3)
+        replay_die("assert: expected `assert <field> <op> <value>`");
+    float got = key_state(field);
+    if (!render_ok && key_needs_render(field)) {
+        printf("%s:%d: skip assert %s (no rendering in this mode)\n",
+               replay_name, replay_line, field);
+        return;
+    }
+    int ok = 0;
+    if (!strcmp(op, ">"))  ok = got >  want;
+    else if (!strcmp(op, "<"))  ok = got <  want;
+    else if (!strcmp(op, ">=")) ok = got >= want;
+    else if (!strcmp(op, "<=")) ok = got <= want;
+    else if (!strcmp(op, "==")) ok = fabsf(got - (float)want) < 1e-4f;
+    else if (!strcmp(op, "!=")) ok = fabsf(got - (float)want) >= 1e-4f;
+    else replay_die("assert: unknown operator '%s'", op);
+    if (!ok) replay_die("%s is %.2f, expected %s %g (t=%.2fs)", field, got, op, want, replay_now);
+}
+
+/* `seed N` only makes sense before anything has been simulated or rendered,
+   and the world is built in init(); so the value is pre-scanned by the caller
+   and a seed line anywhere else is an error. */
+static void replay_run(const char *path, int render_enabled) {
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "replay: cannot open %s\n", path); exit(1); }
+    replay_name = path;
+    char line[512];
+    int executed = 0;
+    while (fgets(line, sizeof line, f)) {
+        replay_line++;
+        char *hash = strchr(line, '#');      /* comments, including trailing */
+        if (hash) *hash = 0;
+        char *cmd = strtok(line, " \t\r\n");
+        if (!cmd) continue;
+        char *rest = strtok(NULL, "\r\n");
+        if (!rest) rest = (char*)"";
+        while (*rest == ' ' || *rest == '\t') rest++;
+
+        if (!strcmp(cmd, "seed")) {
+            if (executed) replay_die("seed must be the first command");
+            continue;                        /* applied before init(), see main */
+        }
+        executed++;
+        if (!strcmp(cmd, "wait")) {
+            advance((float)atof(rest));
+        } else if (!strcmp(cmd, "time")) {
+            day_hours = (float)atof(rest);
+            time_fixed = 1;
+        } else if (!strcmp(cmd, "cam")) {
+            if (sscanf(rest, "%f,%f,%f", &cam_x, &cam_y, &cam_z) != 3)
+                replay_die("cam: expected x,y,z");
+            move_dur = 0.0f;
+        } else if (!strcmp(cmd, "look")) {
+            float y = 0, p = 0;
+            if (sscanf(rest, "%f %f", &y, &p) != 2) replay_die("look: expected yaw pitch");
+            yaw = tyaw = y * 3.14159265f / 180.0f;
+            pitch = tpitch = p * 3.14159265f / 180.0f;
+            have_view = 1;
+        } else if (!strcmp(cmd, "move")) {
+            char over[32] = {0};
+            float dur = 0.0f;
+            int n = sscanf(rest, "%f,%f,%f over %fs", &move_x1, &move_y1, &move_z1, &dur);
+            if (n == 4) {
+                move_x0 = cam_x; move_y0 = cam_y; move_z0 = cam_z;
+                move_dur = dur > 0.0f ? dur : 0.0f;
+                move_t = 0.0f;
+            } else if (n == 3) {
+                cam_x = move_x1; cam_y = move_y1; cam_z = move_z1;
+                move_dur = 0.0f;
+            } else {
+                replay_die("move: expected x,y,z [over seconds]");
+            }
+            (void)over;
+        } else if (!strcmp(cmd, "key")) {
+            char name[32], action[32] = {0};
+            float secs = 0.0f;
+            int n = sscanf(rest, "%31s %31s %f", name, action, &secs);
+            if (n < 2) replay_die("key: expected KEY down|up|hold [seconds]");
+            if (!strcmp(action, "down")) key_by_name(name, 1);
+            else if (!strcmp(action, "up")) key_by_name(name, 0);
+            else if (!strcmp(action, "hold")) {
+                if (n < 3) replay_die("key: `hold` needs a duration");
+                key_by_name(name, 1);
+                advance(secs);
+                key_by_name(name, 0);
+            } else replay_die("key: unknown action '%s'", action);
+        } else if (!strcmp(cmd, "shot")) {
+            if (!*rest) replay_die("shot: expected a path");
+            if (!render_enabled) continue;       /* `dump` mode */
+
+            capture(rest);
+        } else if (!strcmp(cmd, "assert")) {
+            replay_assert(rest);
+        } else {
+            replay_die("unknown command '%s'", cmd);
+        }
+    }
+    fclose(f);
+    printf("replay ok: %s (%d commands, t=%.2fs)\n", path, executed, replay_now);
+}
+
+/* --- entry point -----------------------------------------------------------
+   No sokol_app main() (SOKOL_NO_ENTRY): the window is one mode among four.
+   `shot` and `replay` never create a window or a drawable, so they can run with
+   nothing on screen; `dump` does not even create a Metal device. */
+static sapp_desc game_desc(int argc, char *argv[]);
+
+int main(int argc, char *argv[]) {
+    const char *cmd = (argc > 1 && argv[1][0] != '-') ? argv[1] : NULL;
+    int first = cmd ? 2 : 1;              /* where the flags start */
+    int dump_only = cmd && !strcmp(cmd, "dump");
+
+    /* flag pass shared by every headless mode, plus the seed pre-scan for
+       replays (the world is built before the script runs) */
+    const char *replay_path = NULL;
+    for (int i = first; i < argc; i++) {
+        if (!strcmp(argv[i], "--seed") && i + 1 < argc) terrain_seed = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--time") && i + 1 < argc) { day_hours = (float)atof(argv[++i]); time_fixed = 1; }
+        else if (!strcmp(argv[i], "--yaw") && i + 1 < argc) { yaw = tyaw = (float)atof(argv[++i]) * 3.14159265f / 180.0f; have_view = 1; }
+        else if (!strcmp(argv[i], "--pitch") && i + 1 < argc) { pitch = tpitch = (float)atof(argv[++i]) * 3.14159265f / 180.0f; have_view = 1; }
+        else if (!strcmp(argv[i], "--cam") && i + 1 < argc) {
+            const char *v = argv[++i];
+            cam_x = (float)atof(v);
+            const char *c1 = strchr(v, ',');
+            if (c1) { cam_y = (float)atof(c1 + 1);
+                const char *c2 = strchr(c1 + 1, ',');
+                if (c2) cam_z = (float)atof(c2 + 1); }
+        }
+        else if (!strcmp(argv[i], "--trees-only")) trees_only = 1;
+        else if (!strcmp(argv[i], "--out") && i + 1 < argc) shot_path = argv[++i];
+        else if (!strcmp(argv[i], "--size") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%dx%d", &gfx_w, &gfx_h) != 2) {
+                fprintf(stderr, "--size: expected WxH\n"); return 1;
+            }
+        }
+        else if (!strcmp(argv[i], "--replay") && i + 1 < argc) replay_path = argv[++i];
+    }
+    if (cmd && !strcmp(cmd, "replay")) replay_path = (argc > 2) ? argv[2] : NULL;
+    if (cmd && !strcmp(cmd, "dump")) replay_path = (argc > 2) ? argv[2] : NULL;
+
+    if (!cmd) {
+        if (getenv("HEADLESS")) {            /* old escape hatch, kept honest */
+            fprintf(stderr, "HEADLESS is gone: use `game shot` / `game replay`\n");
+            return 1;
+        }
+        sapp_desc d = game_desc(argc, argv);
+        sapp_run(&d);
+        return 0;
+    }
+    if (strcmp(cmd, "shot") && strcmp(cmd, "replay") && strcmp(cmd, "dump")) {
+        fprintf(stderr, "usage: game [shot|replay FILE|dump FILE] [flags]\n"
+                        "  flags: --seed N --cam x,y,z --yaw DEG --pitch DEG\n"
+                        "         --time HOURS --size WxH --out FILE --trees-only\n");
+        return 1;
+    }
+    if ((!strcmp(cmd, "replay") || !strcmp(cmd, "dump")) && !replay_path) {
+        fprintf(stderr, "usage: game %s FILE\n", cmd);
+        return 1;
+    }
+
+    headless = 1;
+    init();
+    if (!strcmp(cmd, "shot")) {
+        capture(shot_path);
+    } else {
+        /* `seed` in the script has to land before init() builds the world, so
+           read the first command before doing anything else */
+        FILE *f = fopen(replay_path, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof line, f)) {
+                if (line[0] == '#' || line[0] == '\n') continue;
+                unsigned s;
+                if (sscanf(line, "seed %u", &s) == 1) {
+                    /* too late: init() already built the world at terrain_seed */
+                    fprintf(stderr, "replay: `seed` must be given as --seed %u\n", s);
+                    fprintf(stderr, "        (the world is built before the script runs)\n");
+                    fclose(f);
+                    return 1;
+                }
+                break;
+            }
+            fclose(f);
+        }
+        render_ok = !dump_only;
+        replay_run(replay_path, render_ok);
+    }
+    shutdown_gfx();
+    return 0;
+}
+
+sapp_desc game_desc(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--shot") == 0) shot_frame = 60;
-        else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc)
             terrain_seed = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--time") == 0 && i + 1 < argc) {
+            day_hours = (float)atof(argv[++i]);
+            time_fixed = 1;
         }
         else if (strcmp(argv[i], "--yaw") == 0 && i + 1 < argc) {
             yaw = tyaw = (float)atof(argv[++i]) * 3.14159265f / 180.0f;
@@ -3132,27 +3288,9 @@ sapp_desc sokol_main(int argc, char *argv[]) {
             pitch = tpitch = (float)atof(argv[++i]) * 3.14159265f / 180.0f;
             have_view = 1;
         }
-        else if (strcmp(argv[i], "--cam") == 0 && i + 1 < argc) {
-            const char *s = argv[++i];
-            cam_x = (float)atof(s);
-            const char *c1 = strchr(s, ',');
-            if (c1) { cam_y = (float)atof(c1 + 1);
-                const char *c2 = strchr(c1 + 1, ',');
-                if (c2) cam_z = (float)atof(c2 + 1); }
-        }
-        /* bundled launches get cwd=/ so the output path must be explicit */
-        else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
-            shot_path = argv[++i];
-        }
-        else if (strcmp(argv[i], "--time") == 0 && i + 1 < argc) {
-            day_hours = (float)atof(argv[++i]);
-            time_fixed = 1;
-        }
-        else if (strcmp(argv[i], "--trees-only") == 0) {
-            trees_only = 1;
-        }
+        else if (strcmp(argv[i], "--trees-only") == 0) trees_only = 1;
     }
     return (sapp_desc){ .init_cb=init, .frame_cb=frame, .cleanup_cb=cleanup, .event_cb=event,
         .width=1280, .height=720, .window_title="terrain", .high_dpi=true,
-        .sample_count=4 };   /* silhouettes against sky are the visible aliasing */
+        .sample_count=GFX_MSAA };
 }

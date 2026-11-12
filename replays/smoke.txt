@@ -1,0 +1,40 @@
+# Smoke replay: the two reference views plus a move and a time change, with the
+# cheap invariants that break first when terrain or streaming changes.
+#
+#   tools/render.sh replay replays/smoke.txt      renders the shots below
+#   tools/test.sh                                 same script, rendering off
+#
+# Seed and size come from the command line (--seed/--size): the world is built
+# before the script runs, so `seed` is not a replay command.
+
+# default view, aimed automatically at the peak.
+# mesh counters only exist once the streamer has built something, so the
+# shot comes first: it blocks until the world is ready.
+wait 0.5
+assert trees > 1000
+shot build/shots/smoke-default.png
+assert tris > 1000
+assert chunks_drawn > 20
+assert shadowed_pct < 100
+
+# a fixed view from higher up, late afternoon
+cam 0,420,900
+look 0 -18
+time 17.5
+shot build/shots/smoke-high.png
+assert cam_z > 800
+assert chunks_drawn > 20
+
+# walk forward for a second at 60Hz: the camera must move, and stay above the
+# ground (the clamp in sim_step is the only thing that keeps it there)
+cam 0,180,600
+look 0 -6
+key W hold 1.0
+assert cam_z > 605          # W walks forward: +z at yaw 0
+assert cam_y > 0            # never below the ground clamp
+
+# scripted move is smoothed over its duration, not teleported
+move 0,180,200 over 1.0
+wait 0.5
+assert cam_z < 500
+shot build/shots/smoke-move.png

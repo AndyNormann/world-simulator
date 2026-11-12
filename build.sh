@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
+# macOS/Metal only. The GL, D3D11 and X11 paths are gone; the shaders are
+# sokol-shdc generated (see tools/shaders.sh) and the checked-in src/shaders.h
+# carries the MSL.
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p build
 
 CFLAGS_BASE="-std=c99 -g -Wall -Wextra -Werror -Wno-deprecated-declarations -I libs -I libs/sokol -I libs/stb -I src"
+# -fno-objc-arc: sokol_app.h and the Metal readback in main.c are written for
+# manual retain/release. Pinning it here means a future clang default change
+# cannot silently break the build.
+OBJCFLAGS="-fno-objc-arc"
 SAN="-fsanitize=address,undefined"
+FRAMEWORKS="-framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox"
 
 # ponytail: the game builds optimized by default -- at -O0 + ASan the terrain
 # build blocks the main thread for seconds, which reads as a hung window.
@@ -23,30 +31,5 @@ if [ "$MODE" = "test" ]; then
     exit 0
 fi
 
-if [ "$(uname)" = "Darwin" ]; then
-    clang -x objective-c $CFLAGS src/main.c -o build/game \
-        -framework Cocoa -framework QuartzCore -framework OpenGL -framework AudioToolbox $LDFLAGS
-
-    # Wrap in an .app bundle so `open -g build/game.app` can launch it without
-    # stealing focus. `open` cannot launch a bare executable, and a shell-launched
-    # GUI app always activates itself.
-    APP=build/game.app
-    mkdir -p $APP/Contents/MacOS
-    cat > $APP/Contents/Info.plist <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>game</string>
-  <key>CFBundleIdentifier</key><string>local.terrain</string>
-  <key>CFBundleName</key><string>game</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>LSMinimumSystemVersion</key><string>10.15</string>
-</dict></plist>
-PLIST
-    cp build/game $APP/Contents/MacOS/game
-else
-    cc $CFLAGS src/main.c -o build/game \
-        -lX11 -lGL -lpthread -ldl -lm $LDFLAGS
-fi
+clang -x objective-c $CFLAGS $OBJCFLAGS src/main.c -o build/game \
+    $FRAMEWORKS -lm -lpthread $LDFLAGS
