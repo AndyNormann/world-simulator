@@ -149,8 +149,9 @@ A failing assert prints `file:line: field is X, expected OP Y (t=Zs)` and exits 
 ## Build
 
 `./build.sh` (game), `./build.sh test` (unit tests, ASan+UBSan),
-`./build.sh debug` (game with sanitizers). macOS only, Metal only — the GL,
-D3D11 and X11 paths were deleted, not disabled.
+`./build.sh debug` (game with sanitizers, `-O1`: at `-O0` the horizon bake makes
+streaming take minutes). macOS only, Metal only — the GL, D3D11 and X11 paths
+were deleted, not disabled.
 
 ## Vendored
 

@@ -2918,7 +2918,10 @@ static void cleanup(void) {
    streamer has caught the camera up. `dt` is never advanced while waiting:
    otherwise a busy machine would render a different camera than an idle one
    and the same replay would produce two different images. */
-#define SHOT_MAX_PUMP 6000    /* frames of upload pumping before we give up */
+/* Wall clock, not a frame count: a sanitizer build or a loaded machine can need
+   many more pump frames for the same world, and a frame budget would then fail
+   on exactly the builds that are most likely to be slow. */
+#define SHOT_PUMP_TIMEOUT 120.0
 
 static unsigned char *cap_buf = NULL;   /* one allocation, large enough for any
                                            shot in a replay, reused */
@@ -2957,11 +2960,13 @@ static void capture(const char *path) {
     /* do/while, not while: before the first render nothing is queued yet, so
        world_ready() is trivially true and the capture would photograph an
        empty world. The first render is what asks the streamer for chunks. */
-    int pumped = 0;
+    uint64_t t0 = stm_now();
     do {
         render(gfx_w, gfx_h);
-        if (++pumped > SHOT_MAX_PUMP) {
-            fprintf(stderr, "capture %s: world never became ready\n", path);
+        if (stm_sec(stm_now() - t0) > SHOT_PUMP_TIMEOUT) {
+            fprintf(stderr, "capture %s: world not ready after %.0fs "
+                            "(%d of %d chunks), giving up\n",
+                    path, SHOT_PUMP_TIMEOUT, nchunks_ready(), NCHUNKS);
             exit(1);
         }
     } while (!world_ready());

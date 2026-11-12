@@ -16,7 +16,9 @@ CC        = clang
 MODE     ?= game
 
 ifeq ($(MODE),debug)
-OPT       := -O0 -fsanitize=address,undefined
+# -O1, not -O0: the horizon bake is O(n^2) and at -O0 the world takes minutes to
+# stream in, which makes the sanitizer build useless for rendering.
+OPT       := -O1 -fsanitize=address,undefined
 LDEXTRA   := -fsanitize=address,undefined
 OBJDIR    := build/debug
 else
@@ -50,7 +52,7 @@ $(OBJDIR)/%.o: src/%.c $(HEADERS) Makefile
 
 # --- unit tests -------------------------------------------------------------
 # -O0 + sanitizers on purpose: these are cheap and they are where UB shows up.
-TESTCFLAGS := -std=c99 -g -O0 -Wall -Wextra -Werror -Wno-deprecated-declarations \
+TESTCFLAGS := -std=c99 -g -O1 -Wall -Wextra -Werror -Wno-deprecated-declarations \
               -fsanitize=address,undefined -I libs -I src
 
 build/math_test: tests/math_test.c $(HEADERS)
