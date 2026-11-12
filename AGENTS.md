@@ -32,7 +32,9 @@ tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
 tools/analyze.sh       # clang static analyzer, all TUs
-tools/sweep.sh 1 40    # seed sweep of world-gen invariants
+tools/sweep.sh 1 40  # 40-seed terrain gate
+./build/game history --seed 7 --years 500  # the sim as a chronicle
+./build/game history --seed 7 --years 500 --check  # determinism + stock asserts    # seed sweep of world-gen invariants
 tools/analyze.sh       # clang static analyzer over the game TU (~6s)
 tools/sweep.sh A B     # generated-world invariants over seeds A..B
 tools/shaders.sh       # regenerate src/shaders.h — human-triggered only

@@ -1773,15 +1773,15 @@ void bake_ambient(void) {
    a world judged from above is coloured by the same rules as the world the
    player walks through -- reviewing terrain through a palette the game never
    shows is how a map view stops being evidence. */
-void biome_rgb(float x, float z, float h, float slope, float lat, float *out) {
+/* Which kind of ground this is. The sim asks this (fertility, timber, harbours)
+   and the colours come from the answer, so "the good farmland" the bots see is
+   the green the player sees. */
+int biome_id(float x, float z, float h, float slope, float lat) {
     unsigned seed = terrain_seed;
-    float mtn[3];
-    float peakness = terrain_mountain_mask(x, z, seed);
-    /* Latitude: north is cold, south is warm. A 20 km region would not really
-       run tundra to maquis, but it gives the world a "the north" that the sim
-       can starve when the passes close -- and it is the cheapest variety. */
-    float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;   /* 1 at the middle row */
-    float snow_line = 0.72f * peak_y * (0.80f + 0.35f * cold);
+    if (h < 0.0f) return BIOME_SEA;
+    if (h < 3.0f) return BIOME_SAND;
+    if (h > snow_line_at(lat)) return BIOME_SNOW;
+    if (slope > 0.34f || terrain_mountain_mask(x, z, seed) > 0.78f) return BIOME_ROCK;
 
     /* moisture: coast wet, interior dry, lee of a ridge dry */
     float cont = terrain_continent(x, z, seed);
@@ -1794,31 +1794,46 @@ void biome_rgb(float x, float z, float h, float slope, float lat, float *out) {
     if (lee > 1.0f) lee = 1.0f;
     float moist = 1.05f - 0.55f * interior - 0.75f * lee
                 + 0.45f * (terrain_value_noise(x * 0.012f, z * 0.012f, seed + 41u) - 0.5f)
-                + 0.10f * cold;
-    if (moist < 0.0f) moist = 0.0f;
-    if (moist > 1.0f) moist = 1.0f;
+                + 0.10f * (1.0f - fabsf(lat - 0.5f) * 2.0f);
+    if (moist < 0.26f) return BIOME_STEPPE;
+    if (moist > 0.66f) return BIOME_FOREST;
+    if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f) return BIOME_DIRT;
+    return BIOME_GRASS;
+}
 
+float snow_line_at(float lat) {
+    float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;   /* 1 at the middle row */
+    return 0.72f * peak_y * (0.80f + 0.35f * cold);
+}
+
+/* Ground colour for one point. Shared by the vertex bake and the map tool, so
+   a world judged from above is coloured by the same rules as the world the
+   player walks through -- reviewing terrain through a palette the game never
+   shows is how a map view stops being evidence. */
+void biome_rgb(float x, float z, float h, float slope, float lat, float *out) {
     float r, g, b;
-    if (h < 0.0f)                       { r = 0.10f; g = 0.20f; b = 0.20f; }  /* seabed */
-    else if (h < 3.0f)                  { r = 0.63f; g = 0.57f; b = 0.41f; }  /* sand */
-    else if (h > snow_line)             { r = 0.90f; g = 0.86f; b = 0.79f; }  /* snow */
-    else if (slope > 0.34f || peakness > 0.78f)
-                                        { r = 0.46f; g = 0.31f; b = 0.17f; }  /* rock */
-    else if (moist < 0.26f)             { r = 0.52f; g = 0.46f; b = 0.30f; }  /* dry steppe */
-    else if (moist > 0.66f)             { r = 0.24f; g = 0.31f; b = 0.15f; }  /* wet forest floor */
-    else if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f)
-                                        { r = 0.27f; g = 0.18f; b = 0.08f; }  /* bare dirt */
-    else {
+    switch (biome_id(x, z, h, slope, lat)) {
+    case BIOME_SEA:    r = 0.10f; g = 0.20f; b = 0.20f; break;
+    case BIOME_SAND:   r = 0.63f; g = 0.57f; b = 0.41f; break;
+    case BIOME_SNOW:   r = 0.90f; g = 0.86f; b = 0.79f; break;
+    case BIOME_ROCK:   r = 0.46f; g = 0.31f; b = 0.17f; break;
+    case BIOME_STEPPE: r = 0.52f; g = 0.46f; b = 0.30f; break;
+    case BIOME_FOREST: r = 0.24f; g = 0.31f; b = 0.15f; break;
+    case BIOME_DIRT:   r = 0.27f; g = 0.18f; b = 0.08f; break;
+    default: {
+        unsigned seed = terrain_seed;
         float patch = 0.5f + 0.5f * terrain_value_noise(x * 0.022f, z * 0.022f, seed + 5u);
         r = 0.30f + 0.05f * patch;
         g = 0.355f + 0.045f * patch;
         b = 0.14f + 0.04f * (1.0f - patch);
+        float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;
         float warm = cold - 0.75f;
         r += 0.05f * warm;
         g -= 0.02f * warm;
         b -= 0.05f * warm;
+        break;
     }
-    (void)mtn;
+    }
     out[0] = r; out[1] = g; out[2] = b;
 }
 

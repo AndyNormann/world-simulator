@@ -72,12 +72,21 @@ tools: `tools/worlds.sh` (40 worlds + stats), `tools/mapsheet.py` (one image),
 `game worldmap --seed N`. Acceptance: the Q15 invariant list as asserts over a
 seed sweep, plus "a person can look at the sheet and tell the archetypes apart".
 
-**M1 — the world exists as data.** Coarse field + region grid + sites/routes
-graph; 30 polities; economy ticking; cast records; 500 years headless in ~2 s;
-`game history --seed N --years 500` printing a readable chronicle. Acceptance:
-deterministic (same seed → same chronicle hash), invariants asserted (no
-negative stocks, every polity death has a cause, trade converges), and the
-chronicle is *readable*.
+**M1 — the world exists as data.** *Partly done (commit after `d7142e7`).*
+`src/sim.c` builds a sites-and-routes graph (~100–130 towns, ~30 polities,
+~3 routes per town), assigns each town a capacity, fertility and ore from the
+terrain's own biome and river queries, and runs a yearly tick: harvest with a
+weather roll, granary, trade over the roads, famine, population toward capacity,
+ore extraction, plague that walks the routes, and wars that take border towns
+until a polity is destroyed. `game history --seed N --years 500` prints the
+chronicle; `--check` re-runs 200 years twice and asserts determinism, sane
+population and no negative stocks. Cost: ~0.6 s for build + 400 years.
+
+Still missing from M1 and deliberately deferred: **cast records** (M3 needs
+them, the chronicle does not), and the **coarse field + region grid** split —
+the sim currently queries the fine field only while *placing* sites and never
+afterwards, which is the case the region split has to preserve; the split waits
+until the world grows past 17600 and the O(world area) bake actually hurts.
 
 **M2 — one place.** Records → geometry: a generated city, walkable, with roofs
 and alleys; `game shot --settlement 3` byte-identical twice.

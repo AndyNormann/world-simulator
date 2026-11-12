@@ -19,6 +19,12 @@ quick=0 slow=0
 if [ $slow -eq 1 ]; then
     tools/analyze.sh --strict
     tools/sweep.sh 1 40
+    # the sim is data: it is reviewed by reading it, so determinism is the only
+    # thing worth asserting mechanically -- a second run of the same seed must
+    # produce the same world, or "come back to a changed place" is not buildable
+    for s in 1 7 12; do
+        ./build/game history --seed "$s" --years 500 --check | tail -1
+    done
 fi
 
 if [ $quick -eq 0 ]; then

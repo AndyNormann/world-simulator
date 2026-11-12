@@ -53,7 +53,7 @@ all: game
 game: $(OBJDIR)/game
 
 OBJS := $(OBJDIR)/main.o $(OBJDIR)/world.o $(OBJDIR)/render.o $(OBJDIR)/replay.o \
-        $(OBJDIR)/state.o $(OBJDIR)/map.o $(OBJDIR)/sokol_impl.o
+        $(OBJDIR)/state.o $(OBJDIR)/map.o $(OBJDIR)/sim.o $(OBJDIR)/sokol_impl.o
 
 $(OBJDIR)/game: $(OBJS)
 	@mkdir -p $(OBJDIR)

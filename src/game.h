@@ -361,6 +361,10 @@ int chunk_tier(float d);
 int jobs_pending(void);
 void job_push(int ci, int tier);
 void bake_ambient(void);
+enum { BIOME_SEA, BIOME_SAND, BIOME_SNOW, BIOME_ROCK, BIOME_STEPPE,
+       BIOME_FOREST, BIOME_DIRT, BIOME_GRASS };
+int biome_id(float x, float z, float h, float slope, float lat);
+float snow_line_at(float lat);
 void biome_rgb(float x, float z, float h, float slope, float lat, float *out);
 void bake_colours(unsigned seed);
 void bake_environment(unsigned seed);
@@ -376,6 +380,11 @@ void world_stats(void);
 void build_world_data(unsigned seed);
 void build_terrain(unsigned seed);
 void worldmap(const char *path, int size);
+
+/* M1: the world as data (src/sim.c) */
+void sim_init(unsigned seed);
+void sim_tick(void);
+void sim_history(unsigned seed, int years, int check);
 void pick_camera(void);
 void lerp3(float *o, const float *a, const float *b, float t);
 float ramp01(float a, float b, float x);

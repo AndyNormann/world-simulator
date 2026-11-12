@@ -115,6 +115,7 @@ int main(int argc, char *argv[]) {
     const char *cmd = (argc > 1 && argv[1][0] != '-') ? argv[1] : NULL;
     int first = cmd ? 2 : 1;              /* where the flags start */
     int dump_only = cmd && !strcmp(cmd, "dump");
+    int years = 300, sim_check = 0;
 
     /* flag pass shared by every headless mode, plus the seed pre-scan for
        replays (the world is built before the script runs) */
@@ -141,6 +142,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "--size: expected WxH\n"); return 1;
             }
         }
+        else if (!strcmp(argv[i], "--years") && i + 1 < argc) years = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--check")) sim_check = 1;
         else if (!strcmp(argv[i], "--replay") && i + 1 < argc) replay_path = argv[++i];
     }
     if (cmd && !strcmp(cmd, "replay")) replay_path = (argc > 2) ? argv[2] : NULL;
@@ -161,10 +164,19 @@ int main(int argc, char *argv[]) {
                  gfx_w != 1280 || gfx_h != 720 ? (gfx_w < gfx_h ? gfx_w : gfx_h) : 512);
         return 0;
     }
+    if (!strcmp(cmd, "history")) {
+        /* no GPU and no window: the sim is data, and data has to be readable
+           from a terminal or it is not reviewable */
+        headless = 1;
+        build_world_data(terrain_seed);
+        sim_history(terrain_seed, years, sim_check);
+        return 0;
+    }
     if (strcmp(cmd, "shot") && strcmp(cmd, "replay") && strcmp(cmd, "dump")) {
-        fprintf(stderr, "usage: game [shot|replay FILE|dump FILE|worldmap] [flags]\n"
+        fprintf(stderr, "usage: game [shot|replay FILE|dump FILE|worldmap|history] [flags]\n"
                         "  flags: --seed N --cam x,y,z --yaw DEG --pitch DEG\n"
-                        "         --time HOURS --size WxH --out FILE --trees-only\n");
+                        "         --time HOURS --size WxH --out FILE --trees-only\n"
+                        "         --years N --check   (history)\n");
         return 1;
     }
     if ((!strcmp(cmd, "replay") || !strcmp(cmd, "dump")) && !replay_path) {
