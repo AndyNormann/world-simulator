@@ -3203,6 +3203,7 @@ int main(int argc, char *argv[]) {
         else if (!strcmp(argv[i], "--pitch") && i + 1 < argc) { pitch = tpitch = (float)atof(argv[++i]) * 3.14159265f / 180.0f; have_view = 1; }
         else if (!strcmp(argv[i], "--cam") && i + 1 < argc) {
             const char *v = argv[++i];
+            have_view = 1;    /* --cam must win over the auto-aim, or it is a no-op */
             cam_x = (float)atof(v);
             const char *c1 = strchr(v, ',');
             if (c1) { cam_y = (float)atof(c1 + 1);

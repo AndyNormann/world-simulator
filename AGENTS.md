@@ -20,6 +20,83 @@ create a device — it runs the sim and the asserts.
 Every shot also writes `<name>.small.png` (900px wide) and `<name>.hm.png`
 (the heightfield, which is often the thing under test).
 
+## Testing a change (this is the workflow — follow it)
+
+You cannot see a window. Do not try to open one, and do not assume a change is
+fine because it compiles. Use the headless renderer as your eyes.
+
+**1. Cheap gate first.** After any edit to `src/`:
+
+```sh
+./build.sh            # must stay warning-clean (-Werror)
+tools/test.sh         # math/terrain unit tests + the smoke replay, no GPU
+```
+
+That catches compile errors, broken terrain maths, and camera/streaming
+regressions in a few seconds.
+
+**2. Look at the thing you changed.** Render the view where the change is
+visible, then read the downscaled image (never the full-size one):
+
+```sh
+tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/check.png
+```
+
+Then read `build/shots/check.png.small.png` and compare it with
+`build/shots/check.png.hm.png` (the heightfield) and the metrics printed on
+stdout. The numbers are often the faster read: `height=`, `shadowed=`, `trees=`,
+`chunks: … ready, N drawn`, `mesh:`.
+
+**3. Pin the result with asserts, not with a picture.** If the change is a
+behaviour, add or extend a replay so it fails loudly later:
+
+```
+wait 0.5
+shot build/shots/x.png
+assert trees > 1000
+assert shadowed_pct < 60
+```
+
+Prefer a `shot` followed by asserts over asserts alone: chunk and mesh counters
+only exist once something has rendered, and `dump` mode skips those asserts.
+
+**4. Compare against before.** Two runs with the same `--seed/--cam/--yaw/--time`
+produce a byte-identical PNG. So:
+
+```sh
+shasum build/shots/check.png     # change something, re-run, compare
+```
+
+Same hash = no visual change; different hash = it did change, so go look at
+`check.png.small.png` rather than trusting the diff. A hash change you did not
+intend is a bug, and it is the only signal you have that a refactor moved a
+pixel.
+
+**Useful flags**
+
+| Flag | Why |
+|---|---|
+| `--seed N` | fixed world; `1` and `7` are the ones the smoke tests use |
+| `--cam x,y,z` | deterministic viewpoint; also cancels the auto-aim |
+| `--yaw/--pitch DEG` | deterministic look direction |
+| `--time H` | freeze the day clock (17.5 = late afternoon, 21 = night) |
+| `--size WxH` | small renders are faster and cheaper to read |
+| `--trees-only` | flat reference-grey ground, for tree silhouette work |
+| `--out|-o FILE` | where the PNG goes; the `.small.png`/`.hm.png` follow it |
+
+**Gotchas that will bite you**
+
+- The world is built before a replay runs, so `seed` cannot be a replay command.
+  Pass `--seed N`.
+- `assert` on render-derived fields (`tris`, `chunks_drawn`) only after a `shot`.
+- Camera auto-aims at the peak unless `--cam`, `--yaw`/`--pitch`, or a replay
+  `cam`/`look` is given. `--cam` alone is enough to keep the auto-aim off.
+- Rebuilding is not incremental: `tools/render.sh` always calls `./build.sh`
+  first. Skipping it and running `./build/game` directly can render a stale
+  binary — the exact failure mode background agents hit.
+- Output dirs are not created by the game; `build/shots/` exists because
+  `build.sh` makes it.
+
 ## Rules that exist for a reason
 
 - **Never hand-edit `src/shaders.h`.** Edit `src/shaders.glsl`, run
