@@ -9,13 +9,19 @@ source and `src/shaders.h` is generated from it.
 ```sh
 tools/check.sh         # definition of done: build + tests + replays + goldens (~7s)
 tools/check.sh --quick # build + unit tests + smoke replay (~3s)
+tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~40s)
 tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/a.png
 tools/render.sh replay replays/smoke.txt
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
+tools/analyze.sh       # clang static analyzer over the game TU (~6s)
+tools/sweep.sh A B     # generated-world invariants over seeds A..B
 tools/shaders.sh       # regenerate src/shaders.h — human-triggered only
 ```
+
+Threading is checked with `./build.sh tsan` (`build/tsan/game`); the only
+cross-thread surface is the chunk queue in `src/main.c`.
 
 Build is a `Makefile`; `./build.sh [game|test|debug]` wraps it. `src/sokol_impl.c`
 is a separate TU on purpose: a game edit rebuilds in ~1s, sokol only when
@@ -141,7 +147,7 @@ assert FIELD OP VALUE        OP: > < >= <= == !=
 ```
 
 Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees rivers shadowed_pct
-tris chunks_drawn`. `tris` and `chunks_drawn` need rendering, so they are skipped in
+tris chunks_drawn height_min height_max`. `tris` and `chunks_drawn` need rendering, so they are skipped in
 `dump` mode. `#` starts a comment.
 
 A failing assert prints `file:line: field is X, expected OP Y (t=Zs)` and exits 1.

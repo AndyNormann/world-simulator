@@ -7,5 +7,6 @@ mkdir -p build/shots
 case "${1:-game}" in
     test)  make --no-print-directory -j4 test ;;
     debug) make --no-print-directory -j4 MODE=debug game ;;
+    tsan)  make --no-print-directory -j4 MODE=tsan game ;;
     *)     make --no-print-directory -j4 game ;;
 esac

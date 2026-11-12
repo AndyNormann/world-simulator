@@ -1,0 +1,10 @@
+# Invariants every generated world must satisfy, whatever the seed. Run by
+# tools/sweep.sh over a seed range: this is the fuzz rig for a program whose
+# input is a seed, not a byte stream.
+assert trees > 100
+assert trees < 200000
+assert height_max > 20          # every world has some relief
+assert height_max < 3000
+assert height_min > -2000
+assert height_min < 0           # every world has sea floor
+assert shadowed_pct < 100

@@ -2,17 +2,24 @@
 # Definition of done. One exit code: build, unit tests, the sim-only smoke
 # replay, the per-area replays, and the three golden images.
 #
-#   tools/check.sh          everything (~6s)
+#   tools/check.sh          everything (~7s)
 #   tools/check.sh --quick  build + unit tests + smoke replay (~3s)
+#   tools/check.sh --slow   + static analyzer + 40-seed sweep (~40s)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-quick=0
+quick=0 slow=0
 [ "${1:-}" = "--quick" ] && quick=1
+[ "${1:-}" = "--slow" ] && slow=1
 
 ./build.sh                                          # -Werror: warnings are failures
 ./build.sh test | tail -2                           # math_test, terrain_test
 ./build/game dump replays/smoke.txt | tail -1        # sim + asserts, no GPU
+
+if [ $slow -eq 1 ]; then
+    tools/analyze.sh --strict
+    tools/sweep.sh 1 40
+fi
 
 if [ $quick -eq 0 ]; then
     ./build/game replay replays/water.txt    --seed 7 --size 960x540 >/dev/null

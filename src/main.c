@@ -115,6 +115,18 @@ typedef struct {
 } chunk_t;
 
 static chunk_t chunks[NCHUNKS];
+
+/* The builder thread writes .data/.words/.state; the main thread reads .state
+   to decide what to upload and what to draw. Plain int reads let the main
+   thread see CHUNK_DONE while .data was still the previous (freed) pointer --
+   TSan reported it as five races. Every state access goes through these, and
+   the release/acquire pair is what publishes the payload. */
+static inline int chunk_state(const chunk_t *c) {
+    return __atomic_load_n(&c->state, __ATOMIC_ACQUIRE);
+}
+static inline void chunk_set_state(chunk_t *c, int state) {
+    __atomic_store_n(&c->state, state, __ATOMIC_RELEASE);
+}
 /* the built surface colours, shared with the builder thread */
 static const float *gcr, *gcg, *gcb;
 static float chunk_verts[MAX_CHUNK_VERTS * VERT_FLOATS];
@@ -659,7 +671,7 @@ static int heap_pop(float *k) {
             int l = 2 * c + 1, r = l + 1, m = c;
             float mk = kk;
             if (l < heap_n && heap_k[l] < mk) { m = l; mk = heap_k[l]; }
-            if (r < heap_n && heap_k[r] < mk) { m = r; mk = heap_k[r]; }
+            if (r < heap_n && heap_k[r] < mk) { m = r; }
             if (m == c) break;
             heap_k[c] = heap_k[m]; heap_i[c] = heap_i[m];
             c = m;
@@ -1018,11 +1030,11 @@ static void emit_tri(const float *p0, const float *p1, const float *p2,
         const float *p = (k == 0) ? p0 : (k == 1) ? p1 : p2;
         /* no sway at the roots, full at the tips, so the canopy bends and the
            trunk base stays planted in the ground */
-        float w = (p[1] - sway_base) / sway_h;
-        if (w < 0.0f) w = 0.0f;
-        if (w > 1.0f) w = 1.0f;
-        w = w * w * sqrtf(w);
-        push_vert(p, nv, col, w, sway_phase, 0.0f, 0.0f, sway_shadow, sway_bounce);
+        float tip = (p[1] - sway_base) / sway_h;
+        if (tip < 0.0f) tip = 0.0f;
+        if (tip > 1.0f) tip = 1.0f;
+        tip = tip * tip * sqrtf(tip);
+        push_vert(p, nv, col, tip, sway_phase, 0.0f, 0.0f, sway_shadow, sway_bounce);
     }
 }
 
@@ -2027,7 +2039,7 @@ static void *builder_main(void *arg) {
         pthread_mutex_lock(&job_mu);
         chunks[ci].data = copy;
         chunks[ci].words = copy ? words : 0;
-        chunks[ci].state = CHUNK_DONE;
+        chunk_set_state(&chunks[ci], CHUNK_DONE);   /* publishes data/words */
         jobs_in_flight--;
         pthread_mutex_unlock(&job_mu);
     }
@@ -2040,7 +2052,7 @@ static void *builder_main(void *arg) {
 
 static void start_streamer(unsigned seed) {
     for (int i = 0; i < NCHUNKS; i++) {
-        chunks[i].state = CHUNK_EMPTY;
+        chunk_set_state(&chunks[i], CHUNK_EMPTY);
         chunks[i].tier = 0;
         chunks[i].buf.id = SG_INVALID_ID;
         chunks[i].data = NULL;
@@ -2071,7 +2083,7 @@ static int chunks_drawn = 0;
 
 static int nchunks_ready(void) {
     int n = 0;
-    for (int i = 0; i < NCHUNKS; i++) if (chunks[i].state == CHUNK_READY) n++;
+    for (int i = 0; i < NCHUNKS; i++) if (chunk_state(&chunks[i]) == CHUNK_READY) n++;
     return n;
 }
 
@@ -2080,7 +2092,7 @@ static int nchunks_ready(void) {
 static int world_ready(void) {
     if (jobs_pending()) return 0;
     for (int i = 0; i < NCHUNKS; i++)
-        if (chunks[i].state == CHUNK_BUILDING || chunks[i].state == CHUNK_DONE) return 0;
+        if (chunk_state(&chunks[i]) == CHUNK_BUILDING || chunk_state(&chunks[i]) == CHUNK_DONE) return 0;
     return 1;
 }
 
@@ -2093,12 +2105,12 @@ static void chunks_update(void) {
         float ccz = ((float)chunks[i].cz + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
         float d = sqrtf((ccx - cam_x) * (ccx - cam_x) + (ccz - cam_z) * (ccz - cam_z));
         int want = (d < keep) ? chunk_tier(d) : 0;
-        if (chunks[i].state == CHUNK_BUILDING || chunks[i].state == CHUNK_DONE) continue;
-        if (chunks[i].state == CHUNK_READY && chunks[i].tier == want) continue;
-        if (chunks[i].state == CHUNK_EMPTY && want == 0) continue;
+        if (chunk_state(&chunks[i]) == CHUNK_BUILDING || chunk_state(&chunks[i]) == CHUNK_DONE) continue;
+        if (chunk_state(&chunks[i]) == CHUNK_READY && chunks[i].tier == want) continue;
+        if (chunk_state(&chunks[i]) == CHUNK_EMPTY && want == 0) continue;
         /* Hysteresis: a camera parked on a band edge must not rebuild the same
            chunk every frame. Inside the dead band the current tier stays. */
-        if (chunks[i].state == CHUNK_READY && want != 0 && want != chunks[i].tier) {
+        if (chunk_state(&chunks[i]) == CHUNK_READY && want != 0 && want != chunks[i].tier) {
             float edge = (d < 0.5f * (TIER_1_MAX + TIER_2_MAX)) ? TIER_1_MAX : TIER_2_MAX;
             if (fabsf(d - edge) < 60.0f) continue;
         }
@@ -2107,10 +2119,10 @@ static void chunks_update(void) {
             chunks[i].buf.id = SG_INVALID_ID;
         }
         chunks[i].words = 0;
-        if (want == 0) { chunks[i].state = CHUNK_EMPTY; chunks[i].tier = 0; continue; }
+        if (want == 0) { chunk_set_state(&chunks[i], CHUNK_EMPTY); chunks[i].tier = 0; continue; }
         stream_rebuilds++;
         chunks[i].tier = want;
-        chunks[i].state = CHUNK_BUILDING;
+        chunk_set_state(&chunks[i], CHUNK_BUILDING);
         job_push(i, want);
     }
 }
@@ -2573,16 +2585,16 @@ static void headless_readback(unsigned char *dst) {
     NSUInteger row = (NSUInteger)gfx_w * 4;
     id<MTLBuffer> buf = [mtl_device newBufferWithLength:row * (NSUInteger)gfx_h
                                                 options:MTLResourceStorageModeShared];
-    id<MTLCommandBuffer> cb = [mtl_queue commandBuffer];
-    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    id<MTLCommandBuffer> cmdbuf = [mtl_queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cmdbuf blitCommandEncoder];
     [blit copyFromTexture:mtl_resolve sourceSlice:0 sourceLevel:0
              sourceOrigin:MTLOriginMake(0, 0, 0)
                sourceSize:MTLSizeMake((NSUInteger)gfx_w, (NSUInteger)gfx_h, 1)
                  toBuffer:buf destinationOffset:0
         destinationBytesPerRow:row destinationBytesPerImage:row * (NSUInteger)gfx_h];
     [blit endEncoding];
-    [cb commit];
-    [cb waitUntilCompleted];
+    [cmdbuf commit];
+    [cmdbuf waitUntilCompleted];
     memcpy(dst, [buf contents], (size_t)row * (size_t)gfx_h);
     [buf release];
 }
@@ -2657,12 +2669,12 @@ static void init(void) {
 #define SMOOTH_K 17.0f    /* 1-exp(-k/60) == the old 0.25 per-frame lerp */
 static float move_t = 0.0f, move_dur = 0.0f;      /* active scripted move, s */
 static float move_x0, move_y0, move_z0, move_x1, move_y1, move_z1;
-static void sim_step(float dt) {
-    yaw += (tyaw - yaw) * (1.0f - expf(-SMOOTH_K * dt));
-    pitch += (tpitch - pitch) * (1.0f - expf(-SMOOTH_K * dt));
+static void sim_step(float step) {
+    yaw += (tyaw - yaw) * (1.0f - expf(-SMOOTH_K * step));
+    pitch += (tpitch - pitch) * (1.0f - expf(-SMOOTH_K * step));
 
     if (move_dur > 0.0f) {
-        move_t += dt;
+        move_t += step;
         float k = move_t / move_dur;
         if (k > 1.0f) k = 1.0f;
         cam_x = move_x0 + (move_x1 - move_x0) * k;
@@ -2675,7 +2687,7 @@ static void sim_step(float dt) {
     anim_time = (float)sim_frames / 60.0f;
     /* one in-game hour per real minute */
     if (!time_fixed) {
-        day_hours += dt * (24.0f / 1440.0f);
+        day_hours += step * (24.0f / 1440.0f);
         if (day_hours >= 24.0f) day_hours -= 24.0f;
     }
 
@@ -2684,7 +2696,7 @@ static void sim_step(float dt) {
     float fz = cosf(yaw) * cosf(pitch);
     /* screen-right is cross(fwd, up) = (-cos yaw, 0, sin yaw) */
     float rx = -cosf(yaw), rz = sinf(yaw);
-    float spd = (keys[SAPP_KEYCODE_LEFT_SHIFT] ? 40.0f : 12.0f) * dt;
+    float spd = (keys[SAPP_KEYCODE_LEFT_SHIFT] ? 40.0f : 12.0f) * step;
     if (keys[SAPP_KEYCODE_W]) { cam_x += fx*spd; cam_y += fy*spd; cam_z += fz*spd; }
     if (keys[SAPP_KEYCODE_S]) { cam_x -= fx*spd; cam_y -= fy*spd; cam_z -= fz*spd; }
     if (keys[SAPP_KEYCODE_A]) { cam_x -= rx*spd; cam_z -= rz*spd; }
@@ -2734,7 +2746,7 @@ static void render(int w, int h) {
        buffer creation on the render thread */
     int uploads = 0;
     for (int i = 0; i < NCHUNKS && uploads < 64; i++) {
-        if (chunks[i].state != CHUNK_DONE) continue;
+        if (chunk_state(&chunks[i]) != CHUNK_DONE) continue;
         /* an empty chunk gets no buffer: sokol asserts on a zero-size one */
         if (chunks[i].words > 0) {
             chunks[i].buf = sg_make_buffer(&(sg_buffer_desc){
@@ -2748,7 +2760,7 @@ static void render(int w, int h) {
         }
         free(chunks[i].data);
         chunks[i].data = NULL;
-        chunks[i].state = CHUNK_READY;
+        chunk_set_state(&chunks[i], CHUNK_READY);
         uploads++;              /* capped: 49 buffer creations in one frame is a hitch */
     }
 
@@ -2775,11 +2787,11 @@ static void render(int w, int h) {
     if (getenv("FLY") && frame_count % 60 == 0) {
         int t1 = 0, t2 = 0, t4 = 0, emp = 0, rdy = 0;
         for (int i = 0; i < NCHUNKS; i++) {
-            if (chunks[i].state == CHUNK_EMPTY) emp++;
-            if (chunks[i].state == CHUNK_READY) rdy++;
-            if (chunks[i].state == CHUNK_READY && chunks[i].tier == 1) t1++;
-            if (chunks[i].state == CHUNK_READY && chunks[i].tier == 2) t2++;
-            if (chunks[i].state == CHUNK_READY && chunks[i].tier == 4) t4++;
+            if (chunk_state(&chunks[i]) == CHUNK_EMPTY) emp++;
+            if (chunk_state(&chunks[i]) == CHUNK_READY) rdy++;
+            if (chunk_state(&chunks[i]) == CHUNK_READY && chunks[i].tier == 1) t1++;
+            if (chunk_state(&chunks[i]) == CHUNK_READY && chunks[i].tier == 2) t2++;
+            if (chunk_state(&chunks[i]) == CHUNK_READY && chunks[i].tier == 4) t4++;
         }
         fprintf(stderr, "fly f%d cam %.0f,%.0f  ready=%d empty=%d t1=%d t2=%d t4=%d queued=%d rebuilds=%d\n",
                 frame_count, cam_x, cam_z, rdy, emp, t1, t2, t4, jobs_pending(), stream_rebuilds);
@@ -2823,7 +2835,7 @@ static void render(int w, int h) {
         float tanh_h = tanv * (float)w / (float)h;
         chunks_drawn = 0;
         for (int i = 0; i < NCHUNKS; i++) {
-            if (chunks[i].state != CHUNK_READY || chunks[i].words == 0) continue;
+            if (chunk_state(&chunks[i]) != CHUNK_READY || chunks[i].words == 0) continue;
             float ccx = ((float)chunks[i].cx + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
             float ccz = ((float)chunks[i].cz + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
             float ccy = 0.5f * (float)chunks[i].cy_top;
@@ -2857,10 +2869,10 @@ static void render(int w, int h) {
 static void frame(void) {
     static uint64_t last = 0;
     uint64_t now = stm_now();
-    float dt = last ? (float)stm_sec(now - last) : (1.0f / 60.0f);
+    float elapsed = last ? (float)stm_sec(now - last) : (1.0f / 60.0f);
     last = now;
-    if (dt > 0.1f) dt = 0.1f;
-    int steps = (int)(dt * 60.0f + 0.5f);
+    if (elapsed > 0.1f) elapsed = 0.1f;
+    int steps = (int)(elapsed * 60.0f + 0.5f);
     if (steps < 1) steps = 1;
     if (steps > MAX_CATCHUP) steps = MAX_CATCHUP;
     for (int i = 0; i < steps; i++) sim_step(1.0f / 60.0f);
@@ -2943,6 +2955,7 @@ static void shrink_to(unsigned char *dst, int dw, int dh,
                     r += q[0]; g += q[1]; b += q[2]; a += q[3]; n++;
                 }
             unsigned char *o = dst + ((size_t)y * dw + x) * 4;
+            if (n < 1) { o[0] = o[1] = o[2] = o[3] = 0; continue; }
             o[0] = (unsigned char)(r / n); o[1] = (unsigned char)(g / n);
             o[2] = (unsigned char)(b / n); o[3] = (unsigned char)(a / n);
         }
@@ -3086,6 +3099,16 @@ static float key_state(const char *field) {
     if (!strcmp(field, "shadowed_pct")) return (float)shadowed_pct();
     if (!strcmp(field, "tris")) return (float)mesh_tris;
     if (!strcmp(field, "rivers")) return (float)river_count;
+    /* the whole heightfield, so a seed sweep can catch a world that generated
+       flat, empty or nonsensical without rendering anything */
+    if (!strcmp(field, "height_min") || !strcmp(field, "height_max")) {
+        float lo = 1e9f, hi = -1e9f;
+        for (int i = 0; i < N * N; i++) {
+            if (heights[i] < lo) lo = heights[i];
+            if (heights[i] > hi) hi = heights[i];
+        }
+        return strcmp(field, "height_min") == 0 ? lo : hi;
+    }
     replay_die("assert: unknown field '%s'", field);
     return 0.0f;
 }
@@ -3263,6 +3286,7 @@ int main(int argc, char *argv[]) {
     } else {
         /* `seed` in the script has to land before init() builds the world, so
            read the first command before doing anything else */
+        if (!replay_path) { fprintf(stderr, "replay: no file given\n"); return 1; }
         FILE *f = fopen(replay_path, "r");
         if (f) {
             char line[512];

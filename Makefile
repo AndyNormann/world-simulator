@@ -4,6 +4,7 @@
 #   make -j         same, objects in parallel
 #   make test       unit tests, ASan+UBSan, and runs them
 #   make debug      game with ASan+UBSan -> build/debug/game
+#   make tsan       game with ThreadSanitizer -> build/tsan/game
 #   make clean
 #
 # `./build.sh [game|test|debug]` is a thin wrapper over this, because that is
@@ -13,9 +14,20 @@
 # when libs/sokol does, so game edits rebuild in well under a second.
 
 CC        = clang
+# ccache (if present) makes unchanged TUs free -- which is most of them when
+# switching branches or between per-agent worktrees with identical content.
+ifneq ($(shell command -v ccache 2>/dev/null),)
+CC        := ccache clang
+endif
 MODE     ?= game
 
-ifeq ($(MODE),debug)
+ifeq ($(MODE),tsan)
+# ThreadSanitizer over the streamer: the only cross-thread surface in the game
+# is the chunk queue, and it is the thing most likely to break silently.
+OPT       := -O1 -g -fsanitize=thread
+LDEXTRA   := -fsanitize=thread
+OBJDIR    := build/tsan
+else ifeq ($(MODE),debug)
 # -O1, not -O0: the horizon bake is O(n^2) and at -O0 the world takes minutes to
 # stream in, which makes the sanitizer build useless for rendering.
 OPT       := -O1 -fsanitize=address,undefined
@@ -27,7 +39,7 @@ LDEXTRA   :=
 OBJDIR    := build
 endif
 
-CFLAGS    := -std=c99 -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+CFLAGS    := -std=c99 -g -Wall -Wextra -Wshadow -Werror -Wno-deprecated-declarations \
              $(OPT) -I libs -I libs/sokol -I libs/stb -I src
 OBJCFLAGS := -fno-objc-arc
 FRAMEWORKS := -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox
