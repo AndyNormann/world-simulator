@@ -48,6 +48,9 @@ float key_state(const char *field) {
     if (!strcmp(field, "shadowed_pct")) return (float)shadowed_pct();
     if (!strcmp(field, "tris")) return (float)mesh_tris;
     if (!strcmp(field, "rivers")) return (float)river_count;
+    if (!strcmp(field, "land")) return land_pct;
+    if (!strcmp(field, "masses")) return (float)land_masses;
+    if (!strcmp(field, "relief")) return world_relief;
     /* the whole heightfield, so a seed sweep can catch a world that generated
        flat, empty or nonsensical without rendering anything */
     if (!strcmp(field, "height_min") || !strcmp(field, "height_max")) {

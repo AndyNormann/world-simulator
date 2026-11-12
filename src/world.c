@@ -1805,8 +1805,8 @@ void bake_colours(unsigned seed) {
             if (h < 0.0f)                       { r = 0.10f; g = 0.20f; b = 0.20f; }  /* seabed */
             else if (h < 3.0f)                  { r = 0.63f; g = 0.57f; b = 0.41f; }  /* sand */
             else if (h > snow_line)             { r = 0.90f; g = 0.86f; b = 0.79f; }  /* snow */
-            else if (slope > 0.30f || peakness > 0.74f)
-                                                { r = 0.49f; g = 0.29f; b = 0.11f; }  /* rock */
+            else if (slope > 0.34f || peakness > 0.78f)
+                                                { r = 0.46f; g = 0.31f; b = 0.17f; }  /* rock */
             else if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f) {
                 r = 0.27f; g = 0.18f; b = 0.08f;                       /* bare dirt */
             }
@@ -1818,9 +1818,9 @@ void bake_colours(unsigned seed) {
                 /* scaled so the brightest facet (shade step x lighting ~1.95)
                    lands on the reference's sunlit grass #a8c94e, not past it:
                    a clipping green channel is what made the lawn neon */
-                r = 0.29f + 0.06f * patch;
-                g = 0.38f + 0.05f * patch;
-                b = 0.13f + 0.04f * (1.0f - patch);
+                r = 0.30f + 0.05f * patch;
+                g = 0.355f + 0.045f * patch;
+                b = 0.14f + 0.04f * (1.0f - patch);
                 /* cold ground is greyer and darker, warm ground yellower */
                 float warm = cold - 0.75f;
                 r += 0.05f * warm;
@@ -1968,7 +1968,30 @@ void chunks_update(void) {
 /* Everything that is a pure function of the seed: the heightfield, the water,
    the trees. Split out because the map tool needs exactly this and nothing
    else -- no camera, no decor, no streamer. */
+/* Pick the coastline threshold so the land fraction matches the archetype.
+   A fixed threshold cannot: the continental field's distribution shifts per
+   seed, which is how the same generator produced worlds from 25% to 51% land. */
+static int cmp_float(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+void pick_sea_level(unsigned seed) {
+    enum { M = 96 };
+    static float v[M * M];
+    for (int i = 0; i < M * M; i++) {
+        float x = ((i % M) / (float)(M - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+        float z = ((i / M) / (float)(M - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+        v[i] = terrain_continent(x, z, seed);
+    }
+    qsort(v, M * M, sizeof v[0], cmp_float);
+    float target = terrain_gen(seed).land_target;
+    int k = (int)((1.0f - target) * (float)(M * M - 1));
+    world_sea = v[k];
+}
+
 void build_world_data(unsigned seed) {
+    pick_sea_level(seed);
     for (int zi = 0; zi < N; zi++) {
         for (int xi = 0; xi < N; xi++) {
             float x = (xi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
@@ -2008,6 +2031,44 @@ void build_world_data(unsigned seed) {
     /* trees before anything that marches the horizon: a crown is an occluder */
     place_trees(seed);
     build_tree_index();
+    world_stats();
+}
+
+/* The numbers the world-gen invariants are written against: land fraction,
+   how many landmasses are big enough to matter, and the relief the player can
+   actually climb. Computed once after the field is final, so the sweep and the
+   map tool report the same thing (they used to compute it separately). */
+void world_stats(void) {
+    static unsigned char seen[N * N];
+    static int stack[N * N];
+    int land = 0;
+    float lo = 1e9f, hi = -1e9f;
+    for (int i = 0; i < N * N; i++) {
+        seen[i] = 0;
+        if (heights[i] < lo) lo = heights[i];
+        if (heights[i] > hi) hi = heights[i];
+        if (heights[i] > 0.0f) land++;
+    }
+    land_pct = 100.0f * (float)land / (float)(N * N);
+    world_relief = hi - lo;
+
+    int masses = 0;
+    for (int i = 0; i < N * N; i++) {
+        if (heights[i] <= 0.0f || seen[i]) continue;
+        int sp = 0, cells = 0;
+        stack[sp++] = i; seen[i] = 1;
+        while (sp) {
+            int c = stack[--sp];
+            cells++;
+            int cx = c % N, cz = c / N;
+            if (cx > 0     && !seen[c - 1] && heights[c - 1] > 0.0f) { seen[c - 1] = 1; stack[sp++] = c - 1; }
+            if (cx + 1 < N && !seen[c + 1] && heights[c + 1] > 0.0f) { seen[c + 1] = 1; stack[sp++] = c + 1; }
+            if (cz > 0     && !seen[c - N] && heights[c - N] > 0.0f) { seen[c - N] = 1; stack[sp++] = c - N; }
+            if (cz + 1 < N && !seen[c + N] && heights[c + N] > 0.0f) { seen[c + N] = 1; stack[sp++] = c + N; }
+        }
+        if (cells > 400) masses++;
+    }
+    land_masses = masses;
 }
 
 void build_terrain(unsigned seed) {

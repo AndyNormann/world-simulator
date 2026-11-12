@@ -200,6 +200,10 @@ GV(float tpitch,-0.12f)
 G(int keys[512])
 GV(int got_first_mouse,0) /* the warp on lock emits one bogus delta */
 GV(float build_ms,0.0f)
+GV(float world_sea,0.10f) /* continent value at the coastline, set per world */
+GV(float land_pct,0.0f)   /* dry land, % of the map */
+GV(int land_masses,0)     /* landmasses big enough to hold a town */
+GV(float world_relief,0.0f) /* highest land minus lowest land */
 GV(float day_hours,9.18f) /* 0..24, sunrise at 6, sunset at 18 */
 GV(int time_fixed,0) /* --time given: do not advance */
 GV(float anim_time,0.0f) /* sim_frames / 60, not wall clock */
@@ -363,6 +367,8 @@ int nchunks_ready(void);
 int world_ready(void);
 void chunks_update(void);
 void game_logger(const char *tag, uint32_t level, uint32_t item, const char *msg, uint32_t line, const char *file, void *ud);
+void pick_sea_level(unsigned seed);
+void world_stats(void);
 void build_world_data(unsigned seed);
 void build_terrain(unsigned seed);
 void worldmap(const char *path, int size);

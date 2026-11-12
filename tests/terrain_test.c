@@ -1,5 +1,8 @@
 /* Self-check for src/terrain.h. Build+run: ./build.sh test */
 #include "../src/terrain.h"
+
+/* the game sets this per world; the tests use the default coastline */
+float world_sea = 0.10f;
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

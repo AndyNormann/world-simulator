@@ -1,10 +1,23 @@
 # Invariants every generated world must satisfy, whatever the seed. Run by
 # tools/sweep.sh over a seed range: this is the fuzz rig for a program whose
 # input is a seed, not a byte stream.
+#
+# These are the PLAN.md milestone-T criteria. If a generator change breaks one,
+# the change is wrong or the criterion needs to be re-argued in PLAN.md -- not
+# quietly relaxed here.
 assert trees > 100
 assert trees < 200000
-assert height_max > 20          # every world has some relief
+assert height_max > 300         # every world has relief worth climbing
 assert height_max < 3000
 assert height_min > -2000
 assert height_min < 0           # every world has sea floor
 assert shadowed_pct < 100
+
+# Land and geography
+assert land > 20                # less is empty ocean
+assert land < 40                # more is no coastline
+assert masses > 0               # a one-continent world is legitimate; zero is not
+assert relief > 200             # a pancake world has nothing to climb
+
+# Rivers are the map's logic: fords, borders, towns
+assert rivers > 8

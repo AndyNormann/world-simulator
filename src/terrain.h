@@ -15,6 +15,11 @@
    More world at the same cell size is free in look and expensive in mesh, which
    is why the mesh is built in chunks rather than one Delaunay.
    TERRAIN_N must keep 1/(max_freq) >= 4 * cell; see terrain_check_resolution. */
+/* Set by pick_sea_level() before the field is sampled, so that land fraction
+   lands in the archetype's band. Declared here (not in game.h) because the unit
+   tests include this header alone; they define it themselves. */
+extern float world_sea;
+
 #define TERRAIN_N 592
 #define TERRAIN_WORLD 8800.0f
 
@@ -156,6 +161,7 @@ typedef struct {
     float cont_freq;    /* continent scale: higher = smaller, more landmasses */
     float coast_detail; /* high-frequency wobble on the shoreline */
     float talus;        /* erosion slope limit, in cells */
+    float land_target;  /* fraction of the map that should be dry land */
     int   chains;       /* number of mountain chains */
     int   rivers;       /* target river systems */
 } worldgen_t;
@@ -165,12 +171,12 @@ static inline worldgen_t terrain_gen(unsigned seed) {
     h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
     unsigned pick = h % 100u;
     if (pick < 35u)   /* flagship: ranges with passes, high relief */
-        return (worldgen_t){ "alpine",      240.0f, 1950.0f, 1.35f, 0.40f, 0.30f, 3.20f, 2, 24 };
+        return (worldgen_t){ "alpine",      240.0f, 1950.0f, 1.35f, 0.40f, 0.30f, 3.20f, 0.25f, 2, 24 };
     if (pick < 65u)   /* farmland, low hills, easy to cross */
-        return (worldgen_t){ "rolling",     225.0f,  800.0f, 0.85f, 0.45f, 0.26f, 2.30f, 1, 20 };
+        return (worldgen_t){ "rolling",     225.0f,  950.0f, 0.85f, 0.45f, 0.26f, 2.30f, 0.28f, 1, 20 };
     if (pick < 85u)   /* many landmasses, straits instead of passes */
-        return (worldgen_t){ "archipelago", 210.0f, 1350.0f, 0.95f, 0.78f, 0.50f, 2.60f, 1, 14 };
-    return (worldgen_t){ "highland",    300.0f, 1500.0f, 1.15f, 0.36f, 0.24f, 2.80f, 2, 18 };
+        return (worldgen_t){ "archipelago", 210.0f, 1350.0f, 0.95f, 0.78f, 0.50f, 2.60f, 0.24f, 1, 14 };
+    return (worldgen_t){ "highland",    300.0f, 1500.0f, 1.15f, 0.36f, 0.24f, 2.80f, 0.26f, 2, 18 };
 }
 
 #define TERRAIN_CONTINENT_FREQ 0.45f
@@ -220,11 +226,11 @@ static inline float terrain_chain(float x, float z, unsigned seed, int k, float 
     m *= 0.62f + 0.38f * terrain_fbm(u * 0.7f, 1.5f + (float)k * 4.0f, seed + 151u);
 
     /* Belts: a chain occupies part of the world, not all of it. */
-    m *= 0.45f + 0.95f * terrain_fbm(x * 0.38f, z * 0.38f, seed + 83u + (unsigned)k);
+    m *= 0.80f + 0.45f * terrain_fbm(x * 0.38f, z * 0.38f, seed + 83u + (unsigned)k);
 
     /* Ranges belong to land, and the middle of a continent is more likely to
        hold one than a coastal strip. */
-    m *= 0.5f + 0.5f * (0.55f + 0.75f * terrain_continent(x, z, seed));
+    m *= 0.72f + 0.28f * (0.55f + 0.75f * terrain_continent(x, z, seed));
     m *= gain;
     return m > 1.0f ? 1.0f : m;
 }
@@ -293,7 +299,11 @@ static inline float terrain_height(float x, float z, unsigned seed) {
     {
         /* signed sea depth: zero on land above the shoreline, growing with the
            field's distance below it. Sinking only, never lifting. */
-        float sea = (0.10f - cont) * 0.90f * g.amp_low * (1.0f - mask);
+        /* world_sea is the continent value that puts the coastline where the
+           archetype wants it: sampling the field once per world and taking the
+           quantile is the only way to keep land fraction in band, because a
+           fixed threshold gives whatever the noise felt like today (25-51%). */
+        float sea = (world_sea - cont) * 0.90f * g.amp_low * (1.0f - mask);
         if (sea > 0.0f) h -= sea;
     }
 
