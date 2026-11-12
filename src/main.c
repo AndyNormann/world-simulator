@@ -155,8 +155,14 @@ int main(int argc, char *argv[]) {
         sapp_run(&d);
         return 0;
     }
+    if (!strcmp(cmd, "worldmap")) {
+        headless = 1;
+        worldmap(shot_path[0] ? shot_path : "build/shots/world.png",
+                 gfx_w != 1280 || gfx_h != 720 ? (gfx_w < gfx_h ? gfx_w : gfx_h) : 512);
+        return 0;
+    }
     if (strcmp(cmd, "shot") && strcmp(cmd, "replay") && strcmp(cmd, "dump")) {
-        fprintf(stderr, "usage: game [shot|replay FILE|dump FILE] [flags]\n"
+        fprintf(stderr, "usage: game [shot|replay FILE|dump FILE|worldmap] [flags]\n"
                         "  flags: --seed N --cam x,y,z --yaw DEG --pitch DEG\n"
                         "         --time HOURS --size WxH --out FILE --trees-only\n");
         return 1;

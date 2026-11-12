@@ -515,7 +515,7 @@ int h_cmp(const void *a, const void *b) {
 
 
 
-void build_hydrology(void) {
+void build_hydrology(unsigned seed) {
     for (int i = 0; i < N * N; i++) {
         h_src[i] = h_fill[i] = heights[i];
         lake_cell[i] = 0;
@@ -702,14 +702,15 @@ void build_hydrology(void) {
     if (mouth < 0 || best_acc < 12.0f) return;   /* no watershed worth drawing */
 
     static int path[RIVER_MAX];
-    for (int r = 0; r < 12 && seg_n < RIVER_MAX_SEG - 4; r++) {
+    int want = terrain_gen(seed).rivers;
+    for (int r = 0; r < want && seg_n < RIVER_MAX_SEG - 4; r++) {
         int start = mouth;
         if (r > 0) {
             /* the next biggest drainage that is not already in the network */
             int best = -1;
             float ba = 0.0f;
             for (int i = 0; i < N * N; i++) {
-                if (h_fill[i] <= 0.5f || h_acc[i] < 18.0f || h_acc[i] <= ba) continue;
+                if (h_fill[i] <= 0.5f || h_acc[i] < 10.0f || h_acc[i] <= ba) continue;
                 float x = (i % N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
                 float z = (i / N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
                 if (river_query(x, z, NULL, NULL, NULL, NULL) < 26.0f) continue;
@@ -1934,7 +1935,10 @@ void chunks_update(void) {
 /* sokol calls this for every validation failure; level 0 is a panic, after
    which it aborts. Printing the message is the entire point. */
 
-void build_terrain(unsigned seed) {
+/* Everything that is a pure function of the seed: the heightfield, the water,
+   the trees. Split out because the map tool needs exactly this and nothing
+   else -- no camera, no decor, no streamer. */
+void build_world_data(unsigned seed) {
     for (int zi = 0; zi < N; zi++) {
         for (int xi = 0; xi < N; xi++) {
             float x = (xi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
@@ -1949,19 +1953,24 @@ void build_terrain(unsigned seed) {
     }
     /* talus follows the cell: same slope limit as the old 1.35-unit cell, so
        the terrace risers survive erosion the same way they did */
-    terrain_erode(heights, scratch, N, CELL, 2, 2.22f * CELL);
+    /* Talus scales with the archetype: a 1150-unit range needs a steeper angle
+       than a 430-unit one, or erosion planes both into the same pancake. */
+    terrain_erode(heights, scratch, N, CELL, 2, terrain_gen(seed).talus * CELL);
 
     /* Lakes first: they flatten their basins, which changes where the river
        can run. Then carve the channel, before the shadow/AO bake so the water
        gets its own shading. */
-    (void)seed;
-    build_hydrology();
+    build_hydrology(seed);
     build_seg_index();
     carve_river();
 
     /* trees before anything that marches the horizon: a crown is an occluder */
     place_trees(seed);
     build_tree_index();
+}
+
+void build_terrain(unsigned seed) {
+    build_world_data(seed);
     /* the start vantage has to see past the trees it stands in */
     if (!have_view) { pick_camera(); clear_start_clearing(); }
     trees_selfcheck();

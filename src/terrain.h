@@ -138,10 +138,50 @@ static inline float terrain_ridge_n(float x, float z, unsigned seed, int octaves
    wavelength, i.e. two or three landmasses across any world -- passing
    1/WORLD here would be a wavelength of 1.5 million units, which is a constant
    field and produces exactly the single island this is meant to replace. */
+/* --- world archetypes ------------------------------------------------------
+   Every seed picks one of four kinds of world from a weighted table. Same
+   generator, different corner of its parameter space -- an archipelago world
+   and an alpine world are not two generators, they are two settings.
+
+   A pure function of the seed: terrain is sampled on the builder thread, so a
+   mutable cache here would be a data race to save twenty integer ops.
+
+   amp_mtn is the one that matters. Relief is in world units, and an 8800-unit
+   world with 240 units of relief is a pancake whatever the noise does. */
+typedef struct {
+    const char *name;
+    float amp_low;      /* lowland relief */
+    float amp_mtn;      /* mountain relief */
+    float mtn_gain;     /* how much of the land is mountainous */
+    float cont_freq;    /* continent scale: higher = smaller, more landmasses */
+    float coast_detail; /* high-frequency wobble on the shoreline */
+    float talus;        /* erosion slope limit, in cells */
+    int   chains;       /* number of mountain chains */
+    int   rivers;       /* target river systems */
+} worldgen_t;
+
+static inline worldgen_t terrain_gen(unsigned seed) {
+    unsigned h = seed * 2654435761u;
+    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+    unsigned pick = h % 100u;
+    if (pick < 35u)   /* flagship: ranges with passes, high relief */
+        return (worldgen_t){ "alpine",      240.0f, 1950.0f, 1.35f, 0.40f, 0.30f, 3.20f, 2, 24 };
+    if (pick < 65u)   /* farmland, low hills, easy to cross */
+        return (worldgen_t){ "rolling",     225.0f,  800.0f, 0.85f, 0.45f, 0.26f, 2.30f, 1, 20 };
+    if (pick < 85u)   /* many landmasses, straits instead of passes */
+        return (worldgen_t){ "archipelago", 210.0f, 1050.0f, 0.95f, 0.78f, 0.50f, 2.60f, 1, 14 };
+    return (worldgen_t){ "highland",    300.0f, 1500.0f, 1.15f, 0.36f, 0.24f, 2.80f, 2, 18 };
+}
+
 #define TERRAIN_CONTINENT_FREQ 0.45f
 static inline float terrain_continent(float x, float z, unsigned seed) {
-    return terrain_fbm_band(x * TERRAIN_CONTINENT_FREQ, z * TERRAIN_CONTINENT_FREQ,
-                            seed + 211u, 0, 2);
+    worldgen_t g = terrain_gen(seed);
+    float c = terrain_fbm_band(x * g.cont_freq, z * g.cont_freq, seed + 211u, 0, 2);
+    /* Shoreline detail: the coast is where this field crosses the waterline, so
+       a shorter wavelength here turns a scalloped blob into bays, headlands and
+       peninsulas. Inland it barely shows. */
+    c += g.coast_detail * 0.22f * terrain_fbm_band(x, z, seed + 307u, 1, 2);
+    return c;
 }
 
 /* Absolute, not a fraction of the world: mountains do not change size when
@@ -158,34 +198,46 @@ static inline float terrain_continent(float x, float z, unsigned seed) {
    the spine and its width wander along the range so the crest is not parallel.
    The crest detail on top of this is the existing ridged noise in
    terrain_height; this function only decides where there is a mountain at all. */
-static inline float terrain_mountain_mask(float x, float z, unsigned seed) {
+static inline float terrain_chain(float x, float z, unsigned seed, int k, float gain) {
     /* NOTE on units: terrain_fbm() takes world units (it applies BASE_FREQ
        itself), so 0.22 here is a ~1700-unit wavelength, not a 5-unit one. */
-    float turn = terrain_fbm(x * 0.22f, z * 0.22f, seed + 61u);
-    float ang = 0.6f + turn * 1.15f;
+    float turn = terrain_fbm(x * 0.22f, z * 0.22f, seed + 61u + (unsigned)k * 131u);
+    float ang = 0.6f + turn * 1.15f + (float)k * 1.9f;
     float ca = cosf(ang), sa = sinf(ang);
     float u =  x * ca + z * sa;                    /* along the range */
     float v = -x * sa + z * ca;                    /* across it */
 
-    float spine = 260.0f * terrain_fbm(u * 0.9f, 0.5f, seed + 71u);
-    float width = 200.0f * (0.78f + 0.44f * terrain_fbm(u * 0.55f, 3.5f, seed + 97u));
+    float spine = 620.0f * terrain_fbm(u * 0.9f, 0.5f + (float)k * 9.0f, seed + 71u + (unsigned)k);
+    float width = 1000.0f * (0.70f + 0.44f * terrain_fbm(u * 0.55f, 3.5f, seed + 97u + (unsigned)k));
     float d = fabsf(v - spine) / width;
     if (d >= 1.0f) return 0.0f;
     float t = 1.0f - d;
     float m = t * t;
 
-    /* Belts: mountain chains occupy parts of the world, not all of it. The
-       centre is always inside one so the lowland view has a range to frame --
-       relying on the belt field alone leaves some seeds with a flat island. */
-    float belt = 0.50f + 0.85f * terrain_fbm(x * 0.38f, z * 0.38f, seed + 83u);
-    /* Ranges belong to land, and the middle of a continent is more likely to
-       hold one than a coastal strip. This used to be a radial term, which put
-       a range in the middle of whatever the world was -- including open sea. */
-    float mid = 0.55f + 0.75f * terrain_continent(x, z, seed);
-    if (mid > belt) belt = mid;
+    /* Passes: the crest rises and falls along the range at a ~800-unit
+       wavelength, so a chain is massifs with saddles between them rather than a
+       wall. This is where crossings, borders and battles end up. */
+    m *= 0.62f + 0.38f * terrain_fbm(u * 0.7f, 1.5f + (float)k * 4.0f, seed + 151u);
 
-    m *= belt;
-    if (m > 1.0f) m = 1.0f;
+    /* Belts: a chain occupies part of the world, not all of it. */
+    m *= 0.45f + 0.95f * terrain_fbm(x * 0.38f, z * 0.38f, seed + 83u + (unsigned)k);
+
+    /* Ranges belong to land, and the middle of a continent is more likely to
+       hold one than a coastal strip. */
+    m *= 0.5f + 0.5f * (0.55f + 0.75f * terrain_continent(x, z, seed));
+    m *= gain;
+    return m > 1.0f ? 1.0f : m;
+}
+
+/* Several chains, each with its own angle, taken as a max: where two overlap the
+   ridge is higher, and the valleys between them are the passes. */
+static inline float terrain_mountain_mask(float x, float z, unsigned seed) {
+    worldgen_t g = terrain_gen(seed);
+    float m = 0.0f;
+    for (int k = 0; k < g.chains; k++) {
+        float c = terrain_chain(x, z, seed, k, g.mtn_gain);
+        if (c > m) m = c;
+    }
     return m;
 }
 
@@ -215,8 +267,9 @@ static inline float terrain_height(float x, float z, unsigned seed) {
        shelves matter more than the height: a single smooth dome gives every
        foreground facet the same slope, and the meadow reads as a plastic lawn
        instead of the reference's banks and terraces. */
-    float low = TERRAIN_AMP * (0.13f + 0.16f * terrain_fbm_band(px, pz, seed, 0, 3));
-    float low_step = 0.045f * TERRAIN_AMP;
+    worldgen_t g = terrain_gen(seed);
+    float low = g.amp_low * (0.13f + 0.16f * terrain_fbm_band(px, pz, seed, 0, 3));
+    float low_step = 0.045f * g.amp_low;
     float low_shelf = floorf(low / low_step + 0.5f) * low_step;
     low += (low_shelf - low) * 0.35f;
 
@@ -224,11 +277,11 @@ static inline float terrain_height(float x, float z, unsigned seed) {
        reference mountain has stepped shelves rather than a smooth cone. */
     /* three octaves only: the fourth sits at the mesh's Nyquist and turns the
        summit into per-facet static without adding any readable shape */
-    float mountain = TERRAIN_AMP * mask
-                   * (0.22f + 0.85f * terrain_ridge_n(px * TERRAIN_RIDGE_SCALE, pz * TERRAIN_RIDGE_SCALE, seed, 3));
+    float mountain = g.amp_mtn * mask
+                   * (0.20f + 0.88f * terrain_ridge_n(px * TERRAIN_RIDGE_SCALE, pz * TERRAIN_RIDGE_SCALE, seed, 3));
     float stepped = floorf(mountain / TERRAIN_TERRACE_STEP + 0.5f) * TERRAIN_TERRACE_STEP;
     mountain += (stepped - mountain) * TERRAIN_TERRACE_MIX;
-    mountain += TERRAIN_AMP * 0.06f * mask * terrain_fbm_band(px, pz, seed, 2, 1);
+    mountain += g.amp_mtn * 0.06f * mask * terrain_fbm_band(px, pz, seed, 2, 1);
 
     float h = low + mountain;
 
@@ -240,7 +293,7 @@ static inline float terrain_height(float x, float z, unsigned seed) {
     {
         /* signed sea depth: zero on land above the shoreline, growing with the
            field's distance below it. Sinking only, never lifting. */
-        float sea = (0.10f - cont) * 0.90f * TERRAIN_AMP * (1.0f - mask);
+        float sea = (0.10f - cont) * 0.90f * g.amp_low * (1.0f - mask);
         if (sea > 0.0f) h -= sea;
     }
 

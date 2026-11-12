@@ -20,6 +20,9 @@ Adding a file means adding it to `OBJS` in the `Makefile` and to
 ## The commands
 
 ```sh
+tools/worlds.sh 1 40        # 40 worlds: maps + stats + one contact sheet
+tools/worlds.sh 1 40 512    # same, 512px maps (~20s)
+
 tools/check.sh         # definition of done: build + tests + replays + goldens (~7s)
 tools/check.sh --quick # build + unit tests + smoke replay (~3s)
 tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~40s)
@@ -28,6 +31,8 @@ tools/render.sh replay replays/smoke.txt
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
+tools/analyze.sh       # clang static analyzer, all TUs
+tools/sweep.sh 1 40    # seed sweep of world-gen invariants
 tools/analyze.sh       # clang static analyzer over the game TU (~6s)
 tools/sweep.sh A B     # generated-world invariants over seeds A..B
 tools/shaders.sh       # regenerate src/shaders.h — human-triggered only
@@ -163,6 +168,18 @@ Rules for the analysis step:
   no skipping a replay, no raising the golden tolerance. If a golden genuinely
   must change, re-record it with `tools/goldens.sh` and say why in the commit.
 - If a tool is broken rather than finding something, fix the tool.
+
+## Long-term architecture rules
+
+`PLAN.md` is the design. Three rules from it apply to every change:
+
+1. **Anything indexed by world cell is a bug.** Per-cell data lives in a region
+   and is streamed; only the coarse field and the sim graph are global.
+2. **Bots emit state, not unit commands.** Only the warm tier (the settlement
+   the player is in) ever touches individual agents.
+3. **Anything the player changes reaches the sim through the event queue**, and
+   through the same tick function that runs during ordinary play, banishment and
+   the historical fast-forward. One tick function, no special history path.
 
 ## Rules that exist for a reason
 

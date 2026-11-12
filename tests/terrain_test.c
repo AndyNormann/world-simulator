@@ -38,7 +38,9 @@ static void test_heights_finite_and_bounded(void) {
     sample_grid(grid_a, 7u);
     for (int i = 0; i < N * N; i++) {
         assert(isfinite(grid_a[i]));
-        assert(grid_a[i] > -800.0f && grid_a[i] < 330.0f);
+        /* bound spans rolling (~430) to alpine (~1950 * 1.08 + lowland), with
+           headroom: the number is a sanity ceiling, not a design target */
+        assert(grid_a[i] > -1500.0f && grid_a[i] < 2600.0f);
     }
 }
 
@@ -52,16 +54,29 @@ static void test_island_edges_are_underwater(void) {
     }
 }
 
-static void test_no_alias_spikes(void) {
-    /* Neighbouring samples must not jump more than a sane slope; a spike means
-       the noise has content above the grid Nyquist. */
-    sample_grid(grid_a, 55u);
-    for (int zi = 0; zi < N; zi++)
-        for (int xi = 0; xi + 1 < N; xi++) {
-            float d = fabsf(grid_a[zi*N+xi+1] - grid_a[zi*N+xi]);
-            /* 12 at the old 1.35-unit cell; keep the same slope limit */
-            assert(d < 12.0f * CELL / 1.35f);
+static void test_relief_matches_the_archetype(void) {
+    /* Relief is the number the whole game is built on: an alpine world with a
+       rolling world's relief is a pancake you cannot climb. The old version of
+       this test asserted a maximum slope, which was a proxy for aliasing -- but
+       slopes are now deliberately steep (cliffs and ranges are what the player
+       climbs), so the proxy banned the feature. The Nyquist guard lives in
+       terrain_check_resolution; this checks the design number instead. */
+    unsigned seeds[] = { 1u, 2u, 6u, 8u, 12u, 55u, 99u, 2024u };
+    for (unsigned k = 0; k < sizeof seeds / sizeof seeds[0]; k++) {
+        worldgen_t g = terrain_gen(seeds[k]);
+        sample_grid(grid_a, seeds[k]);
+        float hi = -1e9f, lo = 1e9f;
+        for (int i = 0; i < N * N; i++) {
+            if (grid_a[i] > hi) hi = grid_a[i];
+            if (grid_a[i] < lo) lo = grid_a[i];
         }
+        float relief = hi - lo;
+        /* generous: the mountain mask is noise-gated, so a seed can land
+           anywhere from a sixth of the archetype's amplitude to its full
+           value. Outside this band the generator is broken, not varied. */
+        assert(relief > 0.28f * g.amp_mtn);
+        assert(relief < 1.65f * g.amp_mtn);
+    }
 }
 
 static void test_erosion_conserves_mass_and_flattens(void) {
@@ -101,7 +116,7 @@ int main(void) {
     test_deterministic_and_seeded();
     test_heights_finite_and_bounded();
     test_island_edges_are_underwater();
-    test_no_alias_spikes();
+    test_relief_matches_the_archetype();
     test_erosion_conserves_mass_and_flattens();
     printf("terrain: all checks passed\n");
     return 0;
