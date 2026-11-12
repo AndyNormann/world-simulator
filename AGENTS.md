@@ -25,7 +25,7 @@ tools/worlds.sh 1 40 512    # same, 512px maps (~20s)
 
 tools/check.sh         # definition of done: build + tests + replays + goldens (~7s)
 tools/check.sh --quick # build + unit tests + smoke replay (~3s)
-tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~40s)
+tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~70s)
 tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/a.png
 tools/render.sh replay replays/smoke.txt
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU

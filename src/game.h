@@ -87,14 +87,17 @@ G(float sky_ao[N * N]) /* baked ambient occlusion, 0..1 */
 /* the horizon angles are stored as a fraction of this */
 #define HORIZ_RANGE 1.6f
 #define TERRAIN_VERTS 36000    /* MAX_PTS 8000 -> at most ~16000 triangles */
-#define MAX_TREES 96000
+/* Scales with the world: ~96k trees fitted an 8800-unit map at the density
+   the look wants, so 17600 needs four times the budget (or the forest thins
+   out and the whole map reads as meadow). */
+#define MAX_TREES 400000
 #define MAX_CLOUD_VERTS 20000
 #define TREE_VERTS 300         /* trunk + two blobs, with headroom */
 /* Two vertex streams, because they are built at different times by different
    threads: the sky furniture (clouds, birds) is emitted on the main thread once
    the camera is known, and the chunk geometry on the builder thread. */
 /* sea plane (~34k verts at this world size) + clouds + birds */
-#define DECOR_VERTS 40000
+#define DECOR_VERTS 60000
 G(float verts[DECOR_VERTS * VERT_FLOATS])
 GV(int decor_words,0)
 GV(float *vtarget,verts) /* push_vert writes here; see chunk_verts */
@@ -112,7 +115,7 @@ GV(int vcount,0) /* words written into *vtarget */
 #define CHUNK_WORLD (CHUNK_CELLS * CELL)
 /* Integer on purpose: the count sizes arrays. draw_distance_check() asserts it
    still covers the world after any change to TERRAIN_WORLD or CHUNK_CELLS. */
-#define CHUNK_GRID 25
+#define CHUNK_GRID 50
 #define NCHUNKS (CHUNK_GRID * CHUNK_GRID)
 #define MAX_CHUNK_VERTS 40000
 
@@ -151,8 +154,8 @@ typedef struct {
 #define PAL_BYTES (PAL_VECS * 16)
 #define VS_BYTES 96                    /* mat4 mvp + vec4 wind + vec4 sun */
 #define TREE_BUCKET 110.0f
-#define RIVER_MAX 200
-#define RIVER_MAX_SEG 1600
+#define RIVER_MAX 400
+#define RIVER_MAX_SEG 6400
 #define RIVER_HW_MIN  7.0f
 #define RIVER_HW_MAX 24.0f
 #define RIVER_BANK   18.0f   /* bank reaches natural ground this far out */

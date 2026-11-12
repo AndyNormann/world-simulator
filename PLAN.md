@@ -63,7 +63,10 @@ feature.
 ## Milestones
 
 **T — terrain nailed (now).** 8800 first for cheap iteration, then 17600
-(`TERRAIN_N` 1184) once it looks right. Deliverables: archetypes, ranges with
+(`TERRAIN_N` 1184, `CHUNK_GRID` 50, buffer pool 4096, `MAX_TREES` 400k) —
+**done**, with the seed sweep as the gate: `tools/sweep.sh 1 40` green, build
+~2 s (608 ms heightfield + 1.34 s bakes/streamer), one shot ~1.2 s, 2500 chunks,
+~112k trees on a 17600 map. Deliverables: archetypes, ranges with
 passes, rivers that reach the sea, coastline variety, biome colour, and the loop
 tools: `tools/worlds.sh` (40 worlds + stats), `tools/mapsheet.py` (one image),
 `game worldmap --seed N`. Acceptance: the Q15 invariant list as asserts over a

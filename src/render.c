@@ -208,7 +208,9 @@ void headless_gfx_setup(void) {
             .metal = { .device = (const void*)mtl_device },
         },
         .logger = { .func = game_logger },
-        .buffer_pool_size = 2048,
+        /* one buffer per chunk, and the chunk count grows with the world:
+           17600 / (24 cells * 14.9) is a 50x50 grid = 2500 chunks */
+        .buffer_pool_size = 4096,
     });
     hd_color   = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
                     .pixel_format = SG_PIXELFORMAT_RGBA8, .sample_count = GFX_MSAA,
@@ -264,7 +266,9 @@ void init(void) {
         /* sokol's default pool is 128 buffers. One buffer per chunk means a
            world with more than 128 chunks silently fails to create them and
            then aborts inside sg_apply_bindings on the invalid handle. */
-        .buffer_pool_size = 2048,
+        /* one buffer per chunk, and the chunk count grows with the world:
+           17600 / (24 cells * 14.9) is a 50x50 grid = 2500 chunks */
+        .buffer_pool_size = 4096,
     });
     }
     terrain_check_resolution(CELL);

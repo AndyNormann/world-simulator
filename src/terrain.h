@@ -20,8 +20,8 @@
    tests include this header alone; they define it themselves. */
 extern float world_sea;
 
-#define TERRAIN_N 592
-#define TERRAIN_WORLD 8800.0f
+#define TERRAIN_N 1184
+#define TERRAIN_WORLD 17600.0f
 
 #define TERRAIN_OCTAVES 3
 /* Feature size is ABSOLUTE, in world units: a 555-unit wavelength, the same

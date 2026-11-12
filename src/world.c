@@ -1992,12 +1992,19 @@ void pick_sea_level(unsigned seed) {
 
 void build_world_data(unsigned seed) {
     pick_sea_level(seed);
+    float peak_score = -1e9f;
     for (int zi = 0; zi < N; zi++) {
         for (int xi = 0; xi < N; xi++) {
             float x = (xi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
             float z = (zi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
             heights[zi * N + xi] = terrain_height(x, z, seed);
-            if (heights[zi * N + xi] > peak_y) {
+            /* The framing summit is scored, not just maximal: the tallest point
+               in the world is often a spike on a small island, and a camera
+               pointed at it frames one rock against open sea. Weighting by how
+               far inland it is puts the camera on the big landmass instead. */
+            float score = heights[zi * N + xi] + 260.0f * terrain_continent(x, z, seed);
+            if (score > peak_score) {
+                peak_score = score;
                 peak_y = heights[zi * N + xi];
                 peak_x = x;
                 peak_z = z;
@@ -2122,7 +2129,10 @@ void pick_camera(void) {
     /* Distance at which a summit peak_y above eye height sits at `want`.
        Capped: a tall peak would otherwise put the camera so far back that the
        frame is all foreground meadow, which is what a bigger island does. */
-    const float want_d = fminf((peak_y - 8.0f) / tanf(want), 620.0f);
+    /* The cap has to scale with the world. 620 was chosen for an 8800-unit map
+       and, at 17600, parks the camera at the summit's foot with open sea behind
+       it -- a portrait of one rock instead of a landscape. */
+    const float want_d = fminf((peak_y - 8.0f) / tanf(want), 0.18f * TERRAIN_WORLD);
     for (int k = 0; k < 32; k++) {
         float a = (float)k * 6.28318531f / 32.0f;
         /* try every radius, not just the first land one: breaking at the first
