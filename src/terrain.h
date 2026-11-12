@@ -43,7 +43,7 @@
 #define TERRAIN_WARP_AMOUNT 70.0f
 /* ridges are sampled at a higher frequency than fbm; the resolution check has
    to account for it or the assert passes while the crests alias */
-#define TERRAIN_RIDGE_SCALE 1.5f
+#define TERRAIN_RIDGE_SCALE 1.0f
 
 /* Highest frequency present in any of the height terms. */
 static inline float terrain_max_freq(void) {

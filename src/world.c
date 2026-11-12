@@ -800,6 +800,12 @@ void carve_river(void) {
                trench across the lake bed and the ripple-shaded river facets
                showed up as a striped ribbon lying on the still water. */
             if (lake_cell[i]) continue;
+            /* No rivers down cliff faces. The DEM traces steepest descent, and
+               with alpine relief that includes near-vertical drops: painting
+               the bed at water level there drew a white cascade up a rock wall.
+               A river starts where the ground can hold one -- which is also
+               where a real spring is. */
+            if (!river_bed_ok(x, z)) continue;
             float w = 0.0f, hw = RIVER_HW_MIN;
             float d = river_query(x, z, &w, NULL, NULL, &hw);
             if (d > hw + RIVER_BANK) continue;
@@ -881,6 +887,18 @@ void emit_tri(const float *p0, const float *p1, const float *p2,
    channel is 48 wide, so the painted water spreads a facet radius past the
    shore -- which is why trees used to stand in the middle of lakes. Keep trees
    a facet away from any water instead of testing the point exactly. */
+/* Can the ground here hold a river at all? The DEM traces steepest descent,
+   and with alpine relief that includes near-vertical drops: carving a bed there
+   cuts a notch up a rock face and painting it draws a white cascade. A river
+   starts where the ground can hold one, which is also where a spring is. */
+int river_bed_ok(float x, float z) {
+    float gx = sample_height(x + CELL, z) - sample_height(x - CELL, z);
+    float gz = sample_height(x, z + CELL) - sample_height(x, z - CELL);
+    float inv = 1.0f / (2.0f * CELL);
+    gx *= inv; gz *= inv;
+    return gx * gx + gz * gz <= 1.0f;
+}
+
 int near_water(float x, float z) {
     float hw = RIVER_HW_MIN;
     if (river_query(x, z, NULL, NULL, NULL, &hw) < hw + 18.0f) return 1;
@@ -1573,7 +1591,8 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            and painting it as a river put its moving ripple band on top of the
            lake as a bright dashed stripe */
         int is_lake = lake_at(cxw, czw);
-        if (!is_lake && river_query(cxw, czw, NULL, &rx, &rz, &rhw) < rhw) {
+        if (!is_lake && river_bed_ok(cxw, czw)
+            && river_query(cxw, czw, NULL, &rx, &rz, &rhw) < rhw) {
             fx2 = rx; fz2 = rz;
             float wj = 1.0f + (j - 1.0f) * 0.5f;
             r = WATER_COL[0]*wj; g = WATER_COL[1]*wj; b = WATER_COL[2]*wj;
@@ -1967,7 +1986,10 @@ void build_world_data(unsigned seed) {
     /* Talus scales with the archetype: a 1150-unit range needs a steeper angle
        than a 430-unit one, or erosion planes both into the same pancake. */
     worldgen_t gen = terrain_gen(seed);
-    terrain_erode(heights, scratch, N, CELL, 2, gen.talus * CELL);
+    /* More passes than the terracing needs: thermal erosion is what turns a
+       ridged-noise cone into a summit with shoulders, and a 1400-unit peak
+       needs its flanks widened or it renders as a spike. */
+    terrain_erode(heights, scratch, N, CELL, 6, gen.talus * CELL);
     /* Erosion relaxes, it does not enforce: a one-cell needle survives it. The
        clamp is generous (6 cells of drop per cell ~= an 80-degree wall), so it
        removes needles and leaves cliffs and range flanks alone. */

@@ -330,6 +330,7 @@ void build_hydrology(unsigned seed);
 int lake_at(float x, float z);
 void carve_river(void);
 void emit_tri(const float *p0, const float *p1, const float *p2, const float *inner, const float *base, float jitter);
+int river_bed_ok(float x, float z);
 int near_water(float x, float z);
 void place_trees(unsigned seed);
 void emit_trunk(const tree_t *t, float by, float th, float tr);
