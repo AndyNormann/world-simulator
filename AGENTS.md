@@ -23,7 +23,8 @@ Every shot also writes `<name>.small.png` (900px wide) and `<name>.hm.png`
 ## Rules that exist for a reason
 
 - **Never hand-edit `src/shaders.h`.** Edit `src/shaders.glsl`, run
-  `tools/shaders.sh`, commit both.
+  `tools/shaders.sh`, commit both. That step precompiles the Metal bytecode, so
+  a shader error is a generation-time error, not a black frame.
 - **No `sapp_*` in sim code.** `sim_step()` must not touch the GPU or the clock;
   that is what makes a replay reproducible. Rendering lives in `render(w, h)`.
 - **`shot` never advances the sim.** If the streamer has not caught up it pumps

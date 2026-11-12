@@ -3210,7 +3210,8 @@ int main(int argc, char *argv[]) {
                 if (c2) cam_z = (float)atof(c2 + 1); }
         }
         else if (!strcmp(argv[i], "--trees-only")) trees_only = 1;
-        else if (!strcmp(argv[i], "--out") && i + 1 < argc) shot_path = argv[++i];
+        else if ((!strcmp(argv[i], "--out") || !strcmp(argv[i], "-o")) && i + 1 < argc)
+            shot_path = argv[++i];
         else if (!strcmp(argv[i], "--size") && i + 1 < argc) {
             if (sscanf(argv[++i], "%dx%d", &gfx_w, &gfx_h) != 2) {
                 fprintf(stderr, "--size: expected WxH\n"); return 1;
