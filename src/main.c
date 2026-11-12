@@ -225,7 +225,7 @@ static sg_pass_action pass_action;
 static sg_buffer vbuf;
 
 static unsigned terrain_seed = 1;
-static const char *shot_path = "screenshot.png";
+static const char *shot_path = "build/shots/shot.png";
 static int headless = 0;       /* no window: render an offscreen texture */
 static int frame_count = 0;    /* frames rendered, for diagnostics only */
 static long sim_frames = 0;    /* fixed steps taken: animation and the clock

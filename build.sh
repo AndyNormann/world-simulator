@@ -4,7 +4,7 @@
 # carries the MSL.
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p build
+mkdir -p build/shots
 
 CFLAGS_BASE="-std=c99 -g -Wall -Wextra -Werror -Wno-deprecated-declarations -I libs -I libs/sokol -I libs/stb -I src"
 # -fno-objc-arc: sokol_app.h and the Metal readback in main.c are written for
