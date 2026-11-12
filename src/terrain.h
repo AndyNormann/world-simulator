@@ -48,7 +48,7 @@ extern float world_sea;
 #define TERRAIN_WARP_AMOUNT 70.0f
 /* ridges are sampled at a higher frequency than fbm; the resolution check has
    to account for it or the assert passes while the crests alias */
-#define TERRAIN_RIDGE_SCALE 1.0f
+#define TERRAIN_RIDGE_SCALE 0.65f
 
 /* Highest frequency present in any of the height terms. */
 static inline float terrain_max_freq(void) {
@@ -283,8 +283,13 @@ static inline float terrain_height(float x, float z, unsigned seed) {
        reference mountain has stepped shelves rather than a smooth cone. */
     /* three octaves only: the fourth sits at the mesh's Nyquist and turns the
        summit into per-facet static without adding any readable shape */
-    float mountain = g.amp_mtn * mask
-                   * (0.20f + 0.88f * terrain_ridge_n(px * TERRAIN_RIDGE_SCALE, pz * TERRAIN_RIDGE_SCALE, seed, 3));
+    /* Broadened crest: ridged noise is peaky by construction (it folds |n| at
+       zero crossings), and at 1000+ units of amplitude that reads as a field of
+       pinnacles rather than a range. The pow flattens the tops so the crest is
+       a ridge with shoulders instead of a row of spikes. */
+    float ridge = terrain_ridge_n(px * TERRAIN_RIDGE_SCALE, pz * TERRAIN_RIDGE_SCALE, seed, 3);
+    ridge = powf(ridge > 0.0f ? ridge : 0.0f, 0.70f);
+    float mountain = g.amp_mtn * mask * (0.20f + 0.95f * ridge);
     float stepped = floorf(mountain / TERRAIN_TERRACE_STEP + 0.5f) * TERRAIN_TERRACE_STEP;
     mountain += (stepped - mountain) * TERRAIN_TERRACE_MIX;
     mountain += g.amp_mtn * 0.06f * mask * terrain_fbm_band(px, pz, seed, 2, 1);

@@ -152,10 +152,16 @@ void main(){
     // bounce light: coloured, unshadowed, and added rather than multiplied by
     // the surface colour -- a green meadow must be able to light a brown rock
     c += v_bounce * u_sun_col.rgb * 0.30;
+    // Waves are a ~20-unit sine. Once a pixel covers more than a wavelength the
+    // sine aliases into the moire grid that used to stripe every distant sea --
+    // so fade the wave detail out with distance and let a flat, smooth surface
+    // carry the Fresnel instead. Distance, not a mip chain: the sea is two
+    // triangles, so there is nothing to filter.
+    float wfade = 1.0 - smoothstep(500.0, 2600.0, v_depth);
     if (v_water > 0.5 && length(v_flow) > 0.5) {
         float f = dot(v_wpos.xz, v_flow) * 0.10 - u_sky.z * 1.3;
         float lake = step(1.5, length(v_flow));
-        c += vec3(0.10, 0.13, 0.13) * (0.5 + 0.5 * sin(f)) * (1.0 - lake);
+        c += vec3(0.10, 0.13, 0.13) * (0.5 + 0.5 * sin(f)) * (1.0 - lake) * wfade;
         float g = hash1(floor(vec3(v_wpos.xz * 3.5, floor(u_sky.z * 2.0))));
         c += vec3(0.22) * step(0.9965, g) * (1.0 - smoothstep(220.0, 700.0, v_depth));
     }
@@ -168,11 +174,11 @@ void main(){
         vec3 V = normalize(v_wpos - u_cam_pos.xyz);
         float t = u_sky.z;
         vec2 q = v_wpos.xz;
-        vec3 N = normalize(vec3(0.050 * sin(q.x * 0.31 + t * 1.7)
-                             + 0.032 * sin(q.y * 0.57 - t * 2.3),
+        vec3 N = normalize(vec3((0.050 * sin(q.x * 0.31 + t * 1.7)
+                              + 0.032 * sin(q.y * 0.57 - t * 2.3)) * wfade,
                                1.0,
-                               0.050 * sin(q.y * 0.29 - t * 1.5)
-                             + 0.032 * sin(q.x * 0.63 + t * 1.9)));
+                               (0.050 * sin(q.y * 0.29 - t * 1.5)
+                              + 0.032 * sin(q.x * 0.63 + t * 1.9)) * wfade));
         float ndv = max(dot(N, -V), 0.0);
         float fres = 0.02 + 0.50 * pow(1.0 - ndv, 5.0);
         vec3 R = reflect(V, N);
