@@ -169,7 +169,7 @@ static inline worldgen_t terrain_gen(unsigned seed) {
     if (pick < 65u)   /* farmland, low hills, easy to cross */
         return (worldgen_t){ "rolling",     225.0f,  800.0f, 0.85f, 0.45f, 0.26f, 2.30f, 1, 20 };
     if (pick < 85u)   /* many landmasses, straits instead of passes */
-        return (worldgen_t){ "archipelago", 210.0f, 1050.0f, 0.95f, 0.78f, 0.50f, 2.60f, 1, 14 };
+        return (worldgen_t){ "archipelago", 210.0f, 1350.0f, 0.95f, 0.78f, 0.50f, 2.60f, 1, 14 };
     return (worldgen_t){ "highland",    300.0f, 1500.0f, 1.15f, 0.36f, 0.24f, 2.80f, 2, 18 };
 }
 
@@ -180,7 +180,7 @@ static inline float terrain_continent(float x, float z, unsigned seed) {
     /* Shoreline detail: the coast is where this field crosses the waterline, so
        a shorter wavelength here turns a scalloped blob into bays, headlands and
        peninsulas. Inland it barely shows. */
-    c += g.coast_detail * 0.22f * terrain_fbm_band(x, z, seed + 307u, 1, 2);
+    c += g.coast_detail * 0.55f * terrain_fbm_band(x, z, seed + 307u, 1, 2);
     return c;
 }
 
@@ -304,6 +304,32 @@ static inline float terrain_height(float x, float z, unsigned seed) {
     float t = d > TERRAIN_FALLOFF_START ? d - TERRAIN_FALLOFF_START : 0.0f;
     h -= t * t * TERRAIN_SEA_FALLOFF * TERRAIN_AMP;
     return h;
+}
+
+/* Two-pass Lipschitz clamp: no cell may stand more than `step` above a
+   neighbour. Two sweeps (forward and reverse) propagate the bound across the
+   whole field, so a one-cell needle is pulled down no matter how tall it is.
+
+   This exists because raising relief for the alpine archetype produced
+   literal needles: a single cell standing 800 units above the meadow, which
+   renders as a spike and parks the auto-camera staring at its tip. Thermal
+   erosion cannot fix them -- it relaxes, it does not enforce. A cliff face
+   survives because it reaches its height over many cells; a needle does not. */
+static inline void terrain_despike(float *h, int n, float step) {
+    for (int i = 0; i < n * n; i++) {
+        int x = i % n, z = i / n;
+        float m = h[i];
+        if (x > 0     && h[i - 1] + step < m) m = h[i - 1] + step;
+        if (z > 0     && h[i - n] + step < m) m = h[i - n] + step;
+        h[i] = m;
+    }
+    for (int i = n * n - 1; i >= 0; i--) {
+        int x = i % n, z = i / n;
+        float m = h[i];
+        if (x + 1 < n && h[i + 1] + step < m) m = h[i + 1] + step;
+        if (z + 1 < n && h[i + n] + step < m) m = h[i + n] + step;
+        h[i] = m;
+    }
 }
 
 /* Thermal erosion: material above the talus angle slides to lower neighbours.

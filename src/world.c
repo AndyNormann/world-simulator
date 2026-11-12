@@ -1775,7 +1775,13 @@ void bake_colours(unsigned seed) {
                says "this is the upper body of a peak", which is the shape the
                reference has -- green flanks, bare crown, snow on top. */
             float peakness = terrain_mountain_mask(x, z, seed);
-            float snow_line = 0.72f * peak_y;
+            /* Latitude: north is cold, south is warm. A 20 km region would not
+               really run tundra to maquis, but it gives the world a "the north"
+               that the sim can starve when the passes close -- and it is the
+               cheapest variety there is. */
+            float lat = zi / (float)(N - 1);
+            float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;   /* 1 at the middle row */
+            float snow_line = 0.72f * peak_y * (0.80f + 0.35f * cold);
             float r, g, b;
             if (h < 0.0f)                       { r = 0.10f; g = 0.20f; b = 0.20f; }  /* seabed */
             else if (h < 3.0f)                  { r = 0.63f; g = 0.57f; b = 0.41f; }  /* sand */
@@ -1796,6 +1802,11 @@ void bake_colours(unsigned seed) {
                 r = 0.29f + 0.06f * patch;
                 g = 0.38f + 0.05f * patch;
                 b = 0.13f + 0.04f * (1.0f - patch);
+                /* cold ground is greyer and darker, warm ground yellower */
+                float warm = cold - 0.75f;
+                r += 0.05f * warm;
+                g -= 0.02f * warm;
+                b -= 0.05f * warm;
             }
 
             if (trees_only) { r = 0.475f; g = 0.435f; b = 0.396f; }   /* ref ground */
@@ -1955,7 +1966,12 @@ void build_world_data(unsigned seed) {
        the terrace risers survive erosion the same way they did */
     /* Talus scales with the archetype: a 1150-unit range needs a steeper angle
        than a 430-unit one, or erosion planes both into the same pancake. */
-    terrain_erode(heights, scratch, N, CELL, 2, terrain_gen(seed).talus * CELL);
+    worldgen_t gen = terrain_gen(seed);
+    terrain_erode(heights, scratch, N, CELL, 2, gen.talus * CELL);
+    /* Erosion relaxes, it does not enforce: a one-cell needle survives it. The
+       clamp is generous (6 cells of drop per cell ~= an 80-degree wall), so it
+       removes needles and leaves cliffs and range flanks alone. */
+    terrain_despike(heights, N, 6.0f * CELL);
 
     /* Lakes first: they flatten their basins, which changes where the river
        can run. Then carve the channel, before the shadow/AO bake so the water
@@ -1963,6 +1979,9 @@ void build_world_data(unsigned seed) {
     build_hydrology(seed);
     build_seg_index();
     carve_river();
+    /* Again, and last: lake basins are flattened and the channel is carved
+       after the first clamp, and both cut vertical steps into the field. */
+    terrain_despike(heights, N, 6.0f * CELL);
 
     /* trees before anything that marches the horizon: a crown is an occluder */
     place_trees(seed);
