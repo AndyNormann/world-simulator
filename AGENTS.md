@@ -28,6 +28,7 @@ tools/check.sh --quick # build + unit tests + smoke replay (~3s)
 tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~70s)
 tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/a.png
 tools/render.sh replay replays/smoke.txt
+./build/game shot --seed 12 --settlement 3 -o build/shots/town.png  # M2: a town
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
@@ -50,7 +51,8 @@ is a separate TU on purpose: a game edit rebuilds in ~1s, sokol only when
 (gitignored) for clangd.
 
 `shot` and `replay` never open a window: they create a Metal device, render into
-an offscreen 4x-MSAA texture, read it back, and write a PNG. `dump` does not even
+an offscreen texture (SSAA for stills, then the temporal pass), read it back, and
+write a PNG. `dump` does not even
 create a device — it runs the sim and the asserts.
 
 Every shot also writes `<name>.small.png` (900px wide) and `<name>.hm.png`
@@ -208,6 +210,10 @@ Rules for the analysis step:
   different camera than an idle one and the same replay produces two images.
 - **Fixed 60 Hz.** `frame()` accumulates real time and runs N × `sim_step(1/60)`
   (N ≤ 5). A replay is therefore the same motion you see when playing.
+- **A town is one array of footprints** (`blds` in `src/world.c`, filled by
+  `place_settlement`). Placement, drawing and collision all read it and nothing
+  derives a second copy: a house you can see and a house you cannot walk through
+  are the same record, so they cannot drift apart.
 - Uniform parameters are one contiguous blob; the order in `build_palette()` must
   match the std140 order in `src/shaders.glsl`. Getting this wrong is a black or
   garbage frame, not a compile error.

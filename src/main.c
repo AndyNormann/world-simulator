@@ -27,6 +27,7 @@ void sim_step(float step) {
     float fz = cosf(yaw) * cosf(pitch);
     /* screen-right is cross(fwd, up) = (-cos yaw, 0, sin yaw) */
     float rx = -cosf(yaw), rz = sinf(yaw);
+    float px = cam_x, pz = cam_z;
     float spd = (keys[SAPP_KEYCODE_LEFT_SHIFT] ? 40.0f : 12.0f) * step;
     if (keys[SAPP_KEYCODE_W]) { cam_x += fx*spd; cam_y += fy*spd; cam_z += fz*spd; }
     if (keys[SAPP_KEYCODE_S]) { cam_x -= fx*spd; cam_y -= fy*spd; cam_z -= fz*spd; }
@@ -35,6 +36,10 @@ void sim_step(float step) {
     if (getenv("FLY")) { cam_x += fx * 6.0f; cam_z += fz * 6.0f; }
     if (keys[SAPP_KEYCODE_Q]) { cam_y -= spd; }
     if (keys[SAPP_KEYCODE_E]) { cam_y += spd; }
+    /* Walls stop you one axis at a time, so walking into a house slides along it
+       rather than sticking. Only towns have walls, so this is free elsewhere. */
+    if (settle_blocked(cam_x, pz)) cam_x = px;
+    if (settle_blocked(cam_x, cam_z)) cam_z = pz;
 
     float ground = terrain_height(cam_x, cam_z, terrain_seed) + 2.0f;
     if (cam_y < ground) cam_y = ground;
@@ -144,6 +149,7 @@ int main(int argc, char *argv[]) {
             }
         }
         else if (!strcmp(argv[i], "--years") && i + 1 < argc) years = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--settlement") && i + 1 < argc) settlement_site = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--check")) sim_check = 1;
         else if (!strcmp(argv[i], "--flicker")) flicker_mode = 1;
         else if (!strcmp(argv[i], "--ssaa") && i + 1 < argc) { gfx_ssaa = atoi(argv[++i]); ssaa_given = 1; }
@@ -182,6 +188,7 @@ int main(int argc, char *argv[]) {
                         "         --time HOURS --size WxH --out FILE --trees-only\n"
                         "         --flicker  (shot: sub-pixel stability numbers)\n"
                         "         --ssaa N   (shot: supersample factor, default 2)\n"
+                        "         --settlement N   (shot: build sim site N as a town)\n"
                         "         --years N --check   (history)\n");
         return 1;
     }
@@ -240,6 +247,8 @@ sapp_desc game_desc(int argc, char *argv[]) {
             have_view = 1;
         }
         else if (strcmp(argv[i], "--trees-only") == 0) trees_only = 1;
+        else if (strcmp(argv[i], "--settlement") == 0 && i + 1 < argc)
+            settlement_site = atoi(argv[++i]);
     }
     return (sapp_desc){ .init_cb=init, .frame_cb=frame, .cleanup_cb=cleanup, .event_cb=event,
         .width=1280, .height=720, .window_title="terrain", .high_dpi=true,

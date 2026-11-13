@@ -67,6 +67,29 @@ void push_vert(const float *p, const float *n, const float *c,
 
 static tree_t trees[MAX_TREES];
 
+/* --- one place (M2) -------------------------------------------------------
+   A site the sim placed becomes a town: a street grid of stone-and-timber
+   houses with gable roofs, emitted through the same emit_tri path as the trees
+   so chunking, culling and the baked shading come for free. One array serves
+   placement, drawing and collision, so those three cannot disagree.
+
+   ponytail: axis-aligned boxes on a square grid -- no rotation, no doors, no
+   interiors, no windows. Turn the grid to face the road when the player can
+   actually enter the buildings. */
+#define MAX_BLD 160
+#define ROW_PITCH 27.0f          /* house depth + street */
+typedef struct {
+    float x, z, y;               /* centre; y is the lowest ground corner */
+    float w, d, h, rh;           /* footprint, wall height, ridge above wall */
+    unsigned char wall, roof;
+    float sh[SUN_SECTORS];       /* horizon of the ground it stands on */
+} bld_t;
+
+static bld_t blds[MAX_BLD];
+static int nbld = 0;
+static float town_x, town_z, town_y, town_r;
+static void emit_settlement(int ci, int step);
+
 
 /* Draw distance, in world units. Fog saturates at FOG_FAR, so the far terrain
    dissolves into exactly the sky behind it instead of stopping at a ceiling --
@@ -1994,6 +2017,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         emit_tree(&trees[t]);
         ntrees++;
     }
+    if (nbld) emit_settlement(ci, step);
     (void)ntrees; (void)bot;
 
     mesh_pts += npts;
@@ -2479,6 +2503,7 @@ void build_world_data(unsigned seed) {
     place_rocks(seed);
     build_tree_index();
     build_geography();
+    place_settlement(seed);
     world_stats();
 }
 
@@ -2664,6 +2689,198 @@ void build_terrain(unsigned seed) {
     }
 }
 
+/* --- one place: placement, drawing, collision ----------------------------- */
+
+void place_settlement(unsigned seed) {
+    nbld = 0;
+    if (settlement_site < 0) return;
+    /* The town is a *record* made geometry: ask the sim where the place is and
+       how big it is, then build it. The sim is initialised here because a shot
+       does not otherwise need it. */
+    sim_init(seed);
+    float sx, sz, cap = 0.0f;
+    const char *nm = "?";
+    if (!sim_site_loc(settlement_site, &sx, &sz, &cap, &nm)) {
+        fprintf(stderr, "settlement: this world has %d sites, %d was asked for\n",
+                sim_site_count(), settlement_site);
+        settlement_site = -1;
+        return;
+    }
+    int want = 10 + (int)(cap / 22.0f);            /* 10 .. ~130 houses */
+    if (want > MAX_BLD) want = MAX_BLD;
+    int rows = 1;
+    while ((rows + 1) * (rows + 1) <= want) rows++;
+    int cols = (want + rows - 1) / rows;
+    town_x = sx; town_z = sz;
+    town_y = surface_height(sx, sz);
+    town_r = (float)rows * ROW_PITCH * 0.5f + 18.0f;
+
+    /* Rows, not a scatter: houses in a row nearly touch (a gap is an alley),
+       rows are a street apart. A jittered grid of separate boxes reads as
+       debris in a field, which is exactly what the first version looked like. */
+    for (int j = 0; j < rows; j++) {
+        unsigned rh = terrain_hash(j + 17, 5, seed ^ 0x2f1u);
+        /* each row starts a little further along, or every house edge lines up
+           into one long wall down the town */
+        float cursor = sx - (float)cols * 9.0f + (float)(rh % 7u) * 1.6f - 5.0f;
+        float bz = sz + ((float)j - (float)(rows - 1) * 0.5f) * ROW_PITCH
+                 + (float)((rh >> 3) % 5u) - 2.0f;
+        for (int i = 0; i < cols; i++) {
+            unsigned h = terrain_hash(i + 71, j + 913, seed ^ 0x51ed2bu);
+            float u1 = (float)((h >> 7) & 255u) / 255.0f;
+            float u2 = (float)((h >> 15) & 255u) / 255.0f;
+            float u3 = (float)((h >> 23) & 127u) / 127.0f;
+            float w = 10.0f + 5.0f * u1, d = 9.0f + 4.0f * u2;
+            float bx = cursor + w * 0.5f;
+            cursor += w + 3.0f + 4.0f * u2 + ((h % 100u) < 10u ? 13.0f : 0.0f);
+            if (bx > sx + 0.5f * (float)cols * 20.0f) break;
+            /* Sit on the lowest corner, so a house is dug into the slope rather
+               than floating off the downhill side. */
+            float lo = 1e9f, hi = -1e9f;
+            int drowned = 0;
+            for (int k = 0; k < 5; k++) {
+                float gx = bx + ((k & 1) ? w : -w) * 0.5f;
+                float gz = bz + ((k & 2) ? d : -d) * 0.5f;
+                if (k == 4) { gx = bx; gz = bz; }         /* centre too */
+                float g = surface_height(gx, gz);
+                if (g < lo) lo = g;
+                if (g > hi) hi = g;
+                /* The corners, not just the middle, and the water *level*, not
+                   just the distance to the centre line: a house half in the
+                   river or standing in the shallows of a lake is exactly the
+                   defect this catches. */
+                float rl = 0.0f, rfx = 0.0f, rfz = 0.0f, rhw = 0.0f;
+                /* the water facets reach a facet diagonal past the half-width,
+                   so the margin is generous; a house is 15 units wide and its
+                   corner is what overlaps */
+                if (river_query(gx, gz, &rl, &rfx, &rfz, &rhw) < rhw + 4.0f) drowned = 1;
+                if (lake_at(gx, gz)) drowned = 1;
+            }
+            if (drowned) continue;
+            if (lo < 3.0f) continue;                      /* in the sea */
+            if (hi - lo > 6.0f) continue;                 /* a cliff is not a plot */
+            if (nbld >= want) break;
+            bld_t *b = &blds[nbld++];
+            b->x = bx; b->z = bz; b->y = lo;
+            b->w = w; b->d = d;
+            b->h = 5.5f + 4.5f * u3;
+            b->rh = 2.5f + 3.0f * u2;
+            b->wall = (unsigned char)((h >> 5) % 3u);
+            b->roof = (unsigned char)((h >> 11) % 3u);
+            /* its own shade, from the ground it stands on: computed once here,
+               because the render path would otherwise march eight horizons for
+               every house on every chunk rebuild */
+            horizon_at(bx, bz, lo, 1, b->sh);
+        }
+    }
+
+    /* The plot is cleared, not just the footprints: a town with forest growing
+       in its streets reads as rubble in a field. Removing trees changes the
+       bucket index, so it is rebuilt -- the horizon bake that already ran saw
+       the old one, which only means a few tree shadows land where a house now
+       stands. */
+    for (int t = 0; t < tree_count; ) {
+        if (fabsf(trees[t].x - town_x) < town_r + 4.0f &&
+            fabsf(trees[t].z - town_z) < town_r * 0.72f + 4.0f) trees[t] = trees[--tree_count];
+        else t++;
+    }
+    build_tree_index();
+
+    /* one runnable check: a town with no houses, or a house off the ground, is
+       the failure mode of the layout maths and is invisible as a number */
+    assert(nbld > 0 && nbld <= MAX_BLD);
+    for (int i = 0; i < nbld; i++)
+        assert(blds[i].y > 3.0f && blds[i].w > 2.0f && blds[i].d > 2.0f);
+    /* the one thing collision must do: a house is solid, the field outside the
+       town is not */
+    assert(settle_blocked(blds[0].x, blds[0].z));
+    assert(!settle_blocked(town_x + town_r + 400.0f, town_z));
+
+    fprintf(stderr, "settlement: %s, %d buildings, %.0f people, centre %.0f,%.0f, first %.0f,%.0f %.0fx%.0f\n",
+            nm, nbld, cap, town_x, town_z, blds[0].x, blds[0].z, blds[0].w, blds[0].d);
+}
+
+/* A wall stops the walker. Axis-separated in sim_step, so hitting one corner
+   of a house slides along it instead of sticking. */
+int settle_blocked(float x, float z) {
+    for (int i = 0; i < nbld; i++) {
+        const bld_t *b = &blds[i];
+        if (fabsf(x - b->x) < b->w * 0.5f + 0.6f &&
+            fabsf(z - b->z) < b->d * 0.5f + 0.6f) return 1;
+    }
+    return 0;
+}
+
+static void emit_quad(const float *p0, const float *p1, const float *p2,
+                      const float *p3, const float *inner, const float *col) {
+    emit_tri(p0, p1, p2, inner, col, 1.0f);
+    emit_tri(p0, p2, p3, inner, col, 1.0f);
+}
+
+static void emit_building(const bld_t *b) {
+    static const float walls[3][3] = {
+        { 0.80f, 0.76f, 0.67f },   /* lime plaster */
+        { 0.68f, 0.63f, 0.55f },   /* stone */
+        { 0.54f, 0.44f, 0.32f },   /* timber */
+    };
+    static const float roofs[3][3] = {
+        { 0.56f, 0.42f, 0.22f },   /* thatch */
+        { 0.42f, 0.44f, 0.49f },   /* slate */
+        { 0.63f, 0.34f, 0.22f },   /* tile */
+    };
+    float x0 = b->x - b->w * 0.5f, x1 = b->x + b->w * 0.5f;
+    float z0 = b->z - b->d * 0.5f, z1 = b->z + b->d * 0.5f;
+    float yb = b->y - 2.5f;            /* buried, so a slope shows no gap */
+    float yt = b->y + b->h;
+    float ry = yt + b->rh;
+    float inner[3] = { b->x, (yb + yt) * 0.5f, b->z };
+    float ri[3] = { b->x, yt, b->z };
+    const float *wc = walls[b->wall % 3], *rc = roofs[b->roof % 3];
+
+    float p[4][3] = {
+        { x0, yb, z0 }, { x1, yb, z0 }, { x1, yt, z0 }, { x0, yt, z0 } };
+    emit_quad(p[0], p[1], p[2], p[3], inner, wc);          /* north wall */
+    float q[4][3] = {
+        { x0, yb, z1 }, { x1, yb, z1 }, { x1, yt, z1 }, { x0, yt, z1 } };
+    emit_quad(q[0], q[1], q[2], q[3], inner, wc);          /* south wall */
+    float s[4][3] = {
+        { x0, yb, z0 }, { x0, yb, z1 }, { x0, yt, z1 }, { x0, yt, z0 } };
+    emit_quad(s[0], s[1], s[2], s[3], inner, wc);          /* west wall */
+    float e[4][3] = {
+        { x1, yb, z0 }, { x1, yb, z1 }, { x1, yt, z1 }, { x1, yt, z0 } };
+    emit_quad(e[0], e[1], e[2], e[3], inner, wc);          /* east wall */
+
+    /* Gable roof, ridge along x, with a small overhang. Winding does not matter
+       (the pipeline culls nothing); emit_tri aims the normal away from the
+       inner point, which is what makes the two slopes differ in brightness. */
+    float r0[3] = { x0 - 0.6f, ry, b->z }, r1[3] = { x1 + 0.6f, ry, b->z };
+    float t0[3] = { x0 - 0.6f, yt, z0 - 0.6f }, t1[3] = { x1 + 0.6f, yt, z0 - 0.6f };
+    float u0[3] = { x0 - 0.6f, yt, z1 + 0.6f }, u1[3] = { x1 + 0.6f, yt, z1 + 0.6f };
+    emit_quad(t0, t1, r1, r0, ri, rc);
+    emit_quad(u0, u1, r1, r0, ri, rc);
+    emit_tri(p[3], q[3], r0, ri, rc, 1.0f);                /* gable ends */
+    emit_tri(p[2], q[2], r1, ri, rc, 1.0f);
+}
+
+/* Only the finest tier draws houses: at tier 2 and 4 the ground mesh is coarser
+   than the field the houses are snapped to, so they would float or sink. Tier 1
+   reaches 4000 units out, and a town is a few pixels far beyond that. */
+static void emit_settlement(int ci, int step) {
+    if (step > 1) return;
+    for (int i = 0; i < nbld; i++) {
+        if (chunk_of(blds[i].x, blds[i].z) != ci) continue;
+        if (vcount + 60 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) break;
+        /* Same rule as a tree: it takes the shade of the ground it stands on.
+           No sway -- a house does not bend in the wind, so the sway height is
+           pushed out of reach. */
+        sway_shadow = blds[i].sh;
+        sway_bounce = NULL;
+        sway_base = 1.0e6f;
+        sway_h = 1.0f;
+        emit_building(&blds[i]);
+    }
+}
+
 /* Framing wants a low vantage across land with the peak high in frame. A fixed
    camera gives cliffs or open sea on half the seeds, so search azimuths x radii
    and score what the camera actually sees: is the summit unoccluded, does it
@@ -2671,6 +2888,40 @@ void build_terrain(unsigned seed) {
    foreground flat enough to read as meadow.
    ponytail: coarse search, a few hundred height samples, runs once per launch. */
 void pick_camera(void) {
+    /* A town is the subject when there is one: stand back and above its
+       southern corner, looking at the middle of the grid. */
+    if (nbld) {
+        /* stand off far enough that the town spans most of the frame, on land,
+           from whichever side is highest (a vantage, not a wet rock) */
+        float d = town_r * 1.8f + 30.0f;
+        float eye = town_y + d * 0.34f + 8.0f;
+        float best = -1e9f;
+        cam_x = town_x; cam_z = town_z + d;
+        for (int k = 0; k < 24; k++) {
+            float a = (float)k * 6.28318531f / 24.0f;
+            float x = town_x + cosf(a) * d, z = town_z + sinf(a) * d;
+            float g = surface_height(x, z);
+            if (g < 4.0f || lake_at(x, z)) continue;
+            /* the sight line to the town must clear the ground, or the shot is
+               a wall of rock with a town behind it */
+            float worst = 0.0f;
+            for (int s = 1; s < 12; s++) {
+                float t = (float)s / 12.0f;
+                float ray = eye + (town_y - eye) * t;
+                float over = surface_height(x + (town_x - x) * t, z + (town_z - z) * t) - ray;
+                if (over > worst) worst = over;
+            }
+            float score = -worst - fabsf(g - town_y) * 0.2f;
+            if (score > best) { best = score; cam_x = x; cam_z = z; }
+        }
+        /* above the rooftops on a fixed 3/4 angle: the vantage's own height
+           is only used to choose the side, not to aim */
+        cam_y = eye;
+        float dx = town_x - cam_x, dz = town_z - cam_z;
+        yaw = tyaw = atan2f(dx, dz);
+        pitch = tpitch = atan2f(town_y + 0.2f * town_r - cam_y, d);
+        return;
+    }
     const float fovy = 1.0f;          /* must match frame()'s perspective */
     const float want = 0.40f;         /* target summit elevation, radians */
     float start_az, start_elev;

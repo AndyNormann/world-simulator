@@ -183,6 +183,10 @@ GV(float sway_phase,0.0f)
 GV(const float *sway_shadow,NULL)
 GV(const float *sway_bounce,NULL)
 GV(int tree_count,0)
+/* M2: which site (index into the sim's site list) to build as a town, or -1
+   for none. Opt-in on purpose -- every golden and every sweep stays townless
+   unless a shot asks for one. */
+GV(int settlement_site,-1)
 G(sg_pipeline pip)
 G(sg_pipeline sky_pip)
 G(sg_bindings bindings)
@@ -361,6 +365,8 @@ int river_bed_ok(float x, float z);
 int near_water(float x, float z);
 void place_trees(unsigned seed);
 void place_rocks(unsigned seed);
+void place_settlement(unsigned seed);
+int settle_blocked(float x, float z);
 void emit_rock(const tree_t *t);
 void emit_trunk(const tree_t *t, float by, float th, float tr);
 void emit_tier(const tree_t *t, float by, float y0, float y1, float rr, float H, const float *col, int k);
@@ -411,6 +417,8 @@ void worldmap(const char *path, int size);
 
 /* M1: the world as data (src/sim.c) */
 void sim_init(unsigned seed);
+int sim_site_count(void);
+int sim_site_loc(int idx, float *x, float *z, float *cap, const char **name);
 void sim_tick(void);
 void sim_history(unsigned seed, int years, int check);
 void pick_camera(void);

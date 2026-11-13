@@ -1,0 +1,30 @@
+# M2: one place. The town the sim placed at site 3 of seed 12, seen and walked.
+#
+#   ./build/game dump replays/town.txt --seed 12 --settlement 3   asserts only
+#   tools/render.sh replay replays/town.txt --seed 12 --settlement 3
+#
+# The coordinates are the generated layout: the street goes between the row at
+# z=829.5 and the row at z=854.5, and the first house there is at x=4156. If a
+# change moves the houses, this fails loudly -- which is the point, because a
+# town that silently relocates is a bug in the placement, not in the test.
+
+# walk north out of the street into a house: a wall stops you, and the walk is
+# not a teleport (12 u/s for 2 s would cover 24 units)
+cam 4156,200,843
+look 180 -5
+key W hold 2.0
+assert cam_z > 835
+assert cam_z < 842
+
+# the same walk with no town around it is not blocked
+cam 4156,200,2400
+look 180 -5
+key W hold 2.0
+assert cam_z < 2390
+
+# and the place the records describe is the place that is drawn: the same
+# 3/4 view the auto camera picks for a town (--settlement without --cam)
+cam 4427,134,1248
+look -150 -15
+time 9.2
+shot build/shots/town.png

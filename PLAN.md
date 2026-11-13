@@ -191,8 +191,29 @@ the sim currently queries the fine field only while *placing* sites and never
 afterwards, which is the case the region split has to preserve; the split waits
 until the world grows past 17600 and the O(world area) bake actually hurts.
 
-**M2 — one place.** Records → geometry: a generated city, walkable, with roofs
-and alleys; `game shot --settlement 3` byte-identical twice.
+**M2 — one place.** *Done (first slice).* Records became geometry: the sim
+already knew where its towns were, how big they were and what they were called;
+`place_settlement()` in `src/world.c` now asks it and builds the town — a street
+grid of stone-and-timber houses with gable roofs, emitted through the same
+`emit_tri` path as the trees, so chunking, frustum culling and the baked shading
+come for free. `game shot --settlement 3` frames it, and it is byte-identical
+run to run.
+
+What decides the town: the site's **capacity** (30 houses at a fishing village,
+130 at a capital) and the **ground** (a plot is rejected if its corners span more
+than 6 units of height, if it is in the water, a lake or a river, or if the
+whole row would run off the site — a constrained site comes out as 17 houses on
+a spit, which is the terrain having an opinion). The town is one array of
+footprints that placement, drawing and collision all read, so they cannot
+disagree, and `settle_blocked()` stops the walker one axis at a time so you
+slide along a wall instead of sticking to it.
+
+Not done, deliberately: rotation off the grid, doors, interiors, windows, walls
+around the town, a market square, and the *sim* reacting to the town being
+entered. Houses are also only drawn at the finest LOD tier (a town is a few
+pixels beyond 4000 units, and the coarse ground mesh is not the surface the
+footprints are snapped to). `replays/town.txt` walks into a house and asserts
+the wall stops it, which is the part that would otherwise rot silently.
 
 **M3 — the player.** Procedural character, movement/climb/crouch, one stealth
 kill, discovery-driven alert, XP from the event queue.

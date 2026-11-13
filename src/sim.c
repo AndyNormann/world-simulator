@@ -249,6 +249,20 @@ static void build_routes(void) {
     }
 }
 
+/* M2: the geometry side is allowed to ask where a place is and how big it is.
+   The tick's own state stays private: geometry reads the records, it never
+   writes them, so rendering can never perturb the simulation. */
+int sim_site_count(void) { return S.nsites; }
+
+int sim_site_loc(int idx, float *x, float *z, float *cap, const char **name) {
+    if (idx < 0 || idx >= S.nsites) return 0;
+    if (x) *x = S.site[idx].x;
+    if (z) *z = S.site[idx].z;
+    if (cap) *cap = S.site[idx].capacity;
+    if (name) *name = S.site[idx].name;
+    return 1;
+}
+
 void sim_init(unsigned seed) {
     S.seed = seed;
     S.rng = hash32(seed + 0x9e3779b9u) | 1u;
