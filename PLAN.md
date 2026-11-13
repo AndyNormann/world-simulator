@@ -60,6 +60,91 @@ feature.
   landmass, relief p95−p5 ≥ 300 (alpine ~900–1400), ≥4 biomes in sane order,
   every coast reachable on foot (with climbing allowed).
 
+## Terrain roadmap (after T)
+
+T delivered the invariants: archetypes, chains with passes, rivers that reach the
+sea, per-world sea level, latitude + moisture biomes, no needles, no rivers on
+cliffs, and a 40-seed sweep as the gate. What it has not delivered is *shape*:
+valleys that look carved rather than stacked, a north that looks like a north,
+coasts that look like coasts, and geography the sim can name.
+
+Order below is by payoff per session, and by dependency: nothing here is worth
+doing out of order.
+
+### 0. Gates first (½ session)
+- Extend `world_stats()` with the metrics the plan promised and never asserted:
+  **viable town sites per landmass** (the sim already scores them), landmasses
+  with ≥1 town, every coast reachable from the peaks on foot, pass count, mean
+  crest curvature, river length distribution, biome entropy. Print them on the
+  sweep line; assert the ones PLAN already promised.
+- `game worldmap --map plain|biome`: the biome palette made the map *truthful*
+  and *less readable*; both views are wanted, and the judging tool must be the
+  readable one.
+- Add `tools/terrain.sh 1 40` printing the quality table (not just per-seed
+  lines) so "looks better" has a trend.
+
+### 1. Erosion that carves (1–2 sessions) — highest payoff
+Today's erosion is thermal only (`terrain_erode` clamps talus); it planes peaks,
+it does not cut valleys. Add a **flow-driven pass**: D8 flow directions on the
+grid, accumulation `A`, then stream-power `h -= k · A^0.45 · slope` for a handful
+of iterations, with a light sediment fill so basins don't become pits.
+- Why: a valley that widens downstream and meets its river at the right height
+  is the single strongest "this is rock, not noise" signal, and it makes ranges
+  navigable in a way the player learns.
+- Accept: channel sits at the local cross-section minimum; valley width at a
+  given river order grows ~1.5–2× from source to mouth; relief within 10 % of
+  today; sweep green; two 3D shots (alpine, rolling).
+
+### 2. Crests, finished (1 session)
+Chains over a small island still produce rows of spires (seed 40), because the
+crest is noise along its whole length. Expose the chain's along-axis coordinate
+`u` from `terrain_chain()` and give the crest a profile that flattens and widens
+with `u` near the axis.
+- Accept: crest-curvature metric stops growing with relief; seed 40 reads as a
+  range, not a cluster.
+
+### 3. Climate with a north in it (1 session)
+Aspect (south-facing dry and warm, north-facing cold and retaining snow), a real
+wind march for the rain shadow instead of the current single upwind probe,
+a treeline separate from the snowline, and dithered/steepness-blended biome
+transitions instead of hard bands. Riparian green along rivers.
+- Accept: biome entropy up without violating latitudinal order; a north and a
+  south shot that are distinguishable without the sun.
+
+### 4. Coasts (1 session)
+Wave exposure decides the profile: west-facing cliffs and stacks, east-facing
+beaches and tidal flats; estuaries where a river meets the sea; a delta where a
+slow river does.
+- Why: the coast is where a player arrives and where ports and sea trade live.
+
+### 5. Hydrology detail (1 session, needs 1)
+Meanders and floodplain widening on low-gradient reaches, lake basins with a
+real level and an outflow, waterfall markers where a river crosses a steep step
+(they are natural chokepoints and should be visible from the map), endorheic
+basins in dry interiors.
+
+### 6. Terrain exports a geography (1 session, needs 1–3)
+Name what already exists: basins, passes (with width and height), valley mouths,
+harbors, arable area per region. `src/sim.c` should consume *those* instead of
+re-probing cells, so the economy is built on geography the player can see and
+walk to — and so "cut the pass" is a thing that can be done.
+
+### 7. Scale: coarse field + streamed regions (2–3 sessions, only when it bites)
+PLAN rule 4, still unbuilt: ~256² always-resident coarse field plus per-region
+64² fine fields generated on demand, `bake_ambient` per region instead of over
+the world. Trigger: a world larger than 17600, or needing the memory back.
+
+### 8. Beyond the heightfield (2 sessions, after M2/M3)
+Scree, boulders, dead trees and rock outcrops as generated decor — they are also
+climb affordances, so this is partly art direction and partly level design.
+Real overhangs/arches/caves need geometry with collision; a heightfield cannot
+express them, and the demon's climbing makes them valuable.
+
+### Deliberately not planned
+Long-run physically simulated erosion (hours per world), texture detail, glacier
+simulation, and hydrology recomputed on the fine grid. Each costs more than the
+game gets back at this stage.
+
 ## Milestones
 
 **T — terrain nailed (now).** 8800 first for cheap iteration, then 17600
