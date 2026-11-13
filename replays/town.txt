@@ -9,7 +9,7 @@
 # town that silently relocates is a bug in the placement, not in the test.
 
 # walk north out of the street into a house: a wall stops you, and the walk is
-# not a teleport (12 u/s for 2 s would cover 24 units)
+# not a teleport (30 u/s for 2 s would cover 60 units)
 cam 4156,200,843
 look 180 -5
 key W hold 2.0

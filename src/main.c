@@ -28,7 +28,11 @@ void sim_step(float step) {
     /* screen-right is cross(fwd, up) = (-cos yaw, 0, sin yaw) */
     float rx = -cosf(yaw), rz = sinf(yaw);
     float px = cam_x, pz = cam_z;
-    float spd = (keys[SAPP_KEYCODE_LEFT_SHIFT] ? 40.0f : 12.0f) * step;
+    /* Inspection speeds: walking at 12 u/s takes 24 minutes to cross a
+       17 600-unit world, which is not how anyone looks at terrain. Shift is
+       the fly-around gear; at 3.7 units per frame it still cannot step through
+       a wall, which is the only thing the collision test cares about. */
+    float spd = (keys[SAPP_KEYCODE_LEFT_SHIFT] ? 220.0f : 30.0f) * step;
     if (keys[SAPP_KEYCODE_W]) { cam_x += fx*spd; cam_y += fy*spd; cam_z += fz*spd; }
     if (keys[SAPP_KEYCODE_S]) { cam_x -= fx*spd; cam_y -= fy*spd; cam_z -= fz*spd; }
     if (keys[SAPP_KEYCODE_A]) { cam_x -= rx*spd; cam_z -= rz*spd; }
