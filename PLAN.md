@@ -302,6 +302,36 @@ Two fixes:
 Measured by `--flicker`'s `rebuild` column, which forces every chunk to rebuild:
 100 % of pixels changed before, 3–5 % after.
 
+### The disappearing edge (found after the town work)
+
+Reported as "terrain clips out early when I move the camera, so when it becomes
+partially out of view it disappears". It was the chunk cull, and there were two
+faults in one test:
+
+1. **The box was not the chunk's box.** The cull sphere was sized from the
+   columns (`CHUNK_WORLD * 0.75 + 90`) and centred at `cy_top / 2`, i.e. it
+   assumed the ground under a chunk starts at zero. A chunk holding a 1500-unit
+   mountain was represented by a sphere that missed its summit, so the chunk was
+   thrown away while the summit was still on screen. Measured at a known-bad
+   camera, the old test dropped **2.98 % of the visible frame**; now it is
+   0.000 %. `chunk_t` gained `cy_bot`, and the extents are the chunk's real
+   bounds.
+2. **Plane distance was wrong by `sqrt(1+tan^2)`.** A side plane's normal is
+   `(right - tan*fwd)/|...|`, so a box's extent along it is scaled by
+   `sqrt(1+tan²)`; the test used the extent and dropped the factor, which
+   under-measures the slack by ~11 % in a 1.0-radian fov. That is a one-chunk
+   sliver at the frame edge — about 70 pixels, one frame, invisible in a still
+   and obvious in motion. Both planes now use the plane-distance form, plus two
+   render-target pixels of slack for the projection jitter the test does not
+   apply.
+
+The lesson is the same one the flicker work learned: the metric has to be the
+thing the player complains about. **`--flicker` grew a `cull` column** — it
+renders the frame, renders it again with the frustum test switched off
+(`gfx_nocull`), and counts the pixels that differ. It must be exactly
+`0.00 %`, because a chunk that is still on screen may not be thrown away, and no
+frame-to-frame number can see this: the hole holds still.
+
 ### Still open
 
 - Shadows are still per-vertex from the baked horizon, so distant slopes band.

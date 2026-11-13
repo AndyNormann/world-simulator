@@ -669,6 +669,7 @@ void render(int w, int h) {
         const float tanv = 0.54630249f;      /* tan(0.5 * fovy), fovy = 1.0 */
         float tanh_h = tanv * (float)rw / (float)rh;
         chunks_drawn = 0;
+        int nocull = gfx_nocull != 0;   /* A/B and the probe: draw every chunk */
         for (int i = 0; i < NCHUNKS; i++) {
             /* READY: current mesh. BUILDING: the previous tier's mesh, still in
                its old buffer, because words and buffer are only ever replaced
@@ -680,14 +681,38 @@ void render(int w, int h) {
                 || chunks[i].buf.id == SG_INVALID_ID) continue;
             float ccx = ((float)chunks[i].cx + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
             float ccz = ((float)chunks[i].cz + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
-            float ccy = 0.5f * (float)chunks[i].cy_top;
-            /* radius covers the chunk's diagonal plus its relief and trees */
-            float r = CHUNK_WORLD * 0.75f + 90.0f;
-            float dx = ccx - cam_x, dy = ccy - cam_y, dz = ccz - cam_z;
-            float depth = dx * fx + dy * fy + dz * fz;
-            if (depth < -r) continue;
-            if (fabsf(dx * rx + dz * rz) > r + depth * tanh_h) continue;
-            if (fabsf(dx * ux + dy * uy + dz * uz) > r + depth * tanv) continue;
+            float ccy = 0.5f * (float)(chunks[i].cy_top + chunks[i].cy_bot);
+            /* The sphere has to cover the whole box, not a guessed radius: a
+               chunk whose summit is still on screen used to disappear the
+               moment its centre left the frame, because the sphere was sized
+               from the columns and not from the ground under them. */
+            float box_h = CHUNK_WORLD * 0.7072f + 90.0f;   /* half diagonal + trees */
+            float box_v = 0.5f * (float)(chunks[i].cy_top - chunks[i].cy_bot) + 90.0f;
+            float cdx = ccx - cam_x, cdy = ccy - cam_y, cdz = ccz - cam_z;
+            float cdepth = cdx * fx + cdy * fy + cdz * fz;
+            if (!nocull && cdepth < -sqrtf(box_h * box_h + box_v * box_v)) continue;
+            /* behind the eye the frustum stops widening, so the slack is the
+               box extent alone and not a negative cone */
+            float fwd = cdepth > 0.0f ? cdepth : 0.0f;
+            /* the side planes are vertical, so the horizontal extent is exact;
+               the top and bottom planes are tilted, so they take the box's
+               extent along their own normal */
+            float e_v = box_h * (fabsf(ux) + fabsf(uz)) + box_v * fabsf(uy);
+            if (!nocull) {
+                /* Plane distance, not "cone half-width plus radius": a side
+                   plane's normal is (right - tan*fwd)/|...|, so the box's
+                   extent along it is scaled by sqrt(1+tan^2). Dropping that
+                   factor under-measures the slack by ~11% and cuts a chunk at
+                   the frame edge while it is still on screen -- one sliver, one
+                   frame, exactly the "it disappears as it leaves the view"
+                   report. The pixel pad covers the projection's sub-pixel
+                   jitter, which the test does not apply. */
+                float kh = sqrtf(1.0f + tanh_h * tanh_h), kv = sqrtf(1.0f + tanv * tanv);
+                float pad_h = 2.0f * fwd * tanh_h / (float)rw;
+                float pad_v = 2.0f * fwd * tanv / (float)rh;
+                if (fabsf(cdx * rx + cdz * rz) > box_h * kh + fwd * tanh_h + pad_h) continue;
+                if (fabsf(cdx * ux + cdy * uy + cdz * uz) > e_v * kv + fwd * tanv + pad_v) continue;
+            }
             bindings.vertex_buffers[0] = chunks[i].buf;
             sg_apply_bindings(&bindings);
             sg_draw(0, chunks[i].words / VERT_FLOATS, 1);
@@ -839,6 +864,19 @@ void flicker_probe(void) {
         memcpy(alt, cap_buf, bytes);
         res[i] = flicker_pct(base, alt, 0);
     }
+    /* Culling: the frame must be identical with the frustum test switched off.
+       Anything else means a chunk that is still on screen was thrown away --
+       the "terrain disappears when it reaches the edge" report, which no
+       frame-to-frame metric can see because the hole holds still. */
+    yaw = yaw0; pitch = pitch0; cam_y = cy0; cam_x = cx0; cam_z = cz0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    gfx_nocull = 1;
+    settle(48);
+    memcpy(alt, cap_buf, bytes);
+    gfx_nocull = 0;
+    float cull = flicker_pct(base, alt, 0);
+
     /* Walking: what the player actually reports is the wobble of the image
        from frame to frame while moving, so step the camera a fixed small
        amount and average the consecutive-frame differences. */
@@ -928,9 +966,9 @@ void flicker_probe(void) {
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
     settle(48);
     memcpy(base, cap_buf, bytes);
-    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% top=%.2f%%\n",
+    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%%\n",
            terrain_seed, gfx_w, gfx_h, gfx_ssaa, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
-           flicker_pct(base, alt, 1));
+           cull, flicker_pct(base, alt, 1));
     fflush(stdout);
     free(base); free(alt);
 }

@@ -1933,6 +1933,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         tri_flow[k][0] = fx2; tri_flow[k][1] = fz2;
     }
     chunks[ci].cy_top = (int)top;
+    chunks[ci].cy_bot = (int)bot;
 
     /* --- emit ------------------------------------------------------------
        Trees are placed globally (the camera and the diagnostics walk that one

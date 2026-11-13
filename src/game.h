@@ -127,7 +127,7 @@ typedef struct {
     sg_buffer buf;
     float *data;          /* worker output, freed once uploaded */
     int words;
-    int cy_top;           /* highest terrain in the chunk, for culling */
+    int cy_top, cy_bot;   /* terrain bounds in the chunk, for culling */
     int tier;             /* interior spacing in cells of the mesh that is up */
 } chunk_t;
 
@@ -303,6 +303,7 @@ GV(const int GFX_MSAA,1)
 /* Stills are supersampled: render ssaa x ssaa the requested size and box it
    down. Costs only shot time, which nothing is waiting on, and buys more edge
    quality than any MSAA level. A moving window cannot afford it. */
+GV(int gfx_nocull,0)  /* 1: ignore the frustum test (cull correctness probe) */
 GV(int gfx_ssaa,2)
 GV(int ssaa_given,0)
 GV(int fb_w,0)   /* internal render size: gfx_w * gfx_ssaa */

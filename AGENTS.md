@@ -280,6 +280,13 @@ alone can silently produce a header that does not match the headers.
   old chunk buffer has to survive until the new one is uploaded, and the draw
   loop must accept READY and BUILDING (not DONE). `--flicker`'s `rebuild`
   column forces a rebuild of every chunk and reports the worst frame.
+- **The cull box is the chunk's own box.** `chunk_t` carries `cy_top` *and*
+  `cy_bot`, and the frustum test measures plane *distance* (`sqrt(1+tan²)`
+  scaled extents, plus two pixels for the projection jitter). The old test
+  assumed the ground under a chunk starts at zero and dropped that factor; both
+  faults cut chunks that were still on screen, which reads as "the terrain
+  disappears when it reaches the edge". `--flicker`'s `cull` column renders the
+  frame with `gfx_nocull = 1` and must read exactly `0.00 %`.
 - **`tools/flicker.sh 1 12 40`** is the gate, and it checks a *high* camera as
   well as the ground. Pixel counts are contrast-weighted: sharper scores worse.
   Treat it as a regression alarm.
