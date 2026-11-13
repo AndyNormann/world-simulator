@@ -33,6 +33,7 @@ tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
 tools/analyze.sh       # clang static analyzer, all TUs
 tools/sweep.sh 1 40  # 40-seed terrain gate
+tools/terrain.sh  # per-archetype quality table (relief, land, town room)
 ./build/game history --seed 7 --years 500  # the sim as a chronicle
 ./build/game history --seed 7 --years 500 --check  # determinism + stock asserts    # seed sweep of world-gen invariants
 tools/analyze.sh       # clang static analyzer over the game TU (~6s)

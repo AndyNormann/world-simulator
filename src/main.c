@@ -144,6 +144,7 @@ int main(int argc, char *argv[]) {
         }
         else if (!strcmp(argv[i], "--years") && i + 1 < argc) years = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--check")) sim_check = 1;
+        else if (!strcmp(argv[i], "--map") && i + 1 < argc) map_plain = !strcmp(argv[++i], "plain");
         else if (!strcmp(argv[i], "--replay") && i + 1 < argc) replay_path = argv[++i];
     }
     if (cmd && !strcmp(cmd, "replay")) replay_path = (argc > 2) ? argv[2] : NULL;

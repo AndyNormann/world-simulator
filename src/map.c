@@ -13,6 +13,7 @@
 #define MAP_MAX 2048
 
 static unsigned char *mpix;          /* MAP_MAX * MAP_MAX * 3, reused */
+int map_plain;                        /* 1 = height ramp, 0 = the world's own biome palette */
 static int msize;
 static unsigned char *mseen;         /* landmass flood fill scratch */
 
@@ -80,9 +81,10 @@ static void report(unsigned seed) {
         if (heights[i] > hi) hi = heights[i];
         if (heights[i] < lo) lo = heights[i];
     }
-    printf("world %u: %-11s land=%.1f%% masses=%d rivers=%d lakes=%d trees=%d "
-           "h=%.0f..%.0f relief=%.0f slope=%.1f cell=%.2f\n",
-           seed, terrain_gen(seed).name, 100.0f * (float)land / (float)(N * N), masses, river_count, lakes,
+    printf("world %u: %-11s land=%.1f%% masses=%d towns=%d viable=%d rivers=%d "
+           "lakes=%d trees=%d h=%.0f..%.0f relief=%.0f slope=%.1f cell=%.2f\n",
+           seed, terrain_gen(seed).name, 100.0f * (float)land / (float)(N * N), masses,
+           land_town_masses, land_viable, river_count, lakes,
            tree_count, lo, hi, hi - lo, dmax / CELL, CELL);
 }
 
@@ -122,12 +124,22 @@ void worldmap(const char *path, int size) {
                 g = 0.20f + 0.14f * (1.0f - d);
                 b = 0.34f + 0.20f * (1.0f - d);
             } else {
-                /* same palette the bake uses, so the map is evidence about the
-                   world the player walks in rather than a second opinion */
-                float rgb[3];
-                float ny = 1.0f / sqrtf(1.0f + slope * slope);
-                biome_rgb(x, z, h, 1.0f - ny, lat, rgb);
-                r = rgb[0]; g = rgb[1]; b = rgb[2];
+                if (map_plain) {
+                    /* a geography view: one hue ramp, so landmasses, valleys and
+                       coasts read at a glance. The biome view below is the
+                       truthful one and the worse judge of shape. */
+                    float t = h / (peak_y > 1.0f ? peak_y : 1.0f);
+                    r = 0.25f + 0.55f * t;
+                    g = 0.42f + 0.38f * t;
+                    b = 0.20f + 0.10f * (1.0f - t);
+                } else {
+                    /* same palette the bake uses, so the map is evidence about the
+                       world the player walks in rather than a second opinion */
+                    float rgb[3];
+                    float ny = 1.0f / sqrtf(1.0f + slope * slope);
+                    biome_rgb(x, z, h, 1.0f - ny, lat, rgb);
+                    r = rgb[0]; g = rgb[1]; b = rgb[2];
+                }
             }
             float hw = 0.0f;
             if (h >= 0.0f) {

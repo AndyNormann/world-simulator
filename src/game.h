@@ -206,6 +206,8 @@ GV(float build_ms,0.0f)
 GV(float world_sea,0.10f) /* continent value at the coastline, set per world */
 GV(float land_pct,0.0f)   /* dry land, % of the map */
 GV(int land_masses,0)     /* landmasses big enough to hold a town */
+GV(int land_town_masses,0) /* landmasses with room for >= 8 towns */
+GV(int land_viable,0)     /* sampled cells a town could use */
 GV(float world_relief,0.0f) /* highest land minus lowest land */
 GV(float day_hours,9.18f) /* 0..24, sunrise at 6, sunset at 18 */
 GV(int time_fixed,0) /* --time given: do not advance */
@@ -379,6 +381,7 @@ void pick_sea_level(unsigned seed);
 void world_stats(void);
 void build_world_data(unsigned seed);
 void build_terrain(unsigned seed);
+extern int map_plain;
 void worldmap(const char *path, int size);
 
 /* M1: the world as data (src/sim.c) */

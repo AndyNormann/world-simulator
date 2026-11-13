@@ -50,6 +50,8 @@ float key_state(const char *field) {
     if (!strcmp(field, "rivers")) return (float)river_count;
     if (!strcmp(field, "land")) return land_pct;
     if (!strcmp(field, "masses")) return (float)land_masses;
+    if (!strcmp(field, "townmasses")) return (float)land_town_masses;
+    if (!strcmp(field, "viable")) return (float)land_viable;
     if (!strcmp(field, "relief")) return world_relief;
     /* the whole heightfield, so a seed sweep can catch a world that generated
        flat, empty or nonsensical without rendering anything */

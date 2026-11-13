@@ -2085,23 +2085,40 @@ void world_stats(void) {
     land_pct = 100.0f * (float)land / (float)(N * N);
     world_relief = hi - lo;
 
-    int masses = 0;
+    /* A landmass is only worth calling a landmass if it can hold a town: a
+       town needs low ground, a mild slope and to not be a lake. This is a
+       cheap proxy for the sim's own scoring -- it can be wrong about *where*
+       a town goes, but not about whether one can go here at all. */
+    int masses = 0, town_masses = 0, viable_total = 0;
     for (int i = 0; i < N * N; i++) {
         if (heights[i] <= 0.0f || seen[i]) continue;
-        int sp = 0, cells = 0;
+        int sp = 0, cells = 0, viable = 0;
         stack[sp++] = i; seen[i] = 1;
         while (sp) {
             int c = stack[--sp];
             cells++;
             int cx = c % N, cz = c / N;
+            if ((cx & 3) == 0 && (cz & 3) == 0 && cx > 0 && cz > 0 && cx + 1 < N && cz + 1 < N) {
+                float h = heights[c];
+                float dhx = heights[c + 1] - heights[c - 1];
+                float dhz = heights[c + N] - heights[c - N];
+                float slope = 1.0f - 1.0f / sqrtf(1.0f + 0.25f * (dhx * dhx + dhz * dhz));
+                if (h > 8.0f && h < 1200.0f && slope < 0.18f && !lake_cell[c]) viable++;
+            }
             if (cx > 0     && !seen[c - 1] && heights[c - 1] > 0.0f) { seen[c - 1] = 1; stack[sp++] = c - 1; }
             if (cx + 1 < N && !seen[c + 1] && heights[c + 1] > 0.0f) { seen[c + 1] = 1; stack[sp++] = c + 1; }
             if (cz > 0     && !seen[c - N] && heights[c - N] > 0.0f) { seen[c - N] = 1; stack[sp++] = c - N; }
             if (cz + 1 < N && !seen[c + N] && heights[c + N] > 0.0f) { seen[c + N] = 1; stack[sp++] = c + N; }
         }
-        if (cells > 400) masses++;
+        if (cells > 400) {
+            masses++;
+            if (viable * 9 >= 32) town_masses++;   /* stride-4 sampled cells */
+            viable_total += viable * 9;
+        }
     }
     land_masses = masses;
+    land_town_masses = town_masses;
+    land_viable = viable_total;
 }
 
 void build_terrain(unsigned seed) {

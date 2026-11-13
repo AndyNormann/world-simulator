@@ -21,3 +21,9 @@ assert relief > 200             # a pancake world has nothing to climb
 
 # Rivers are the map's logic: fords, borders, towns
 assert rivers > 8
+
+# A world is only playable if there is somewhere to live and something to climb
+# between. townmasses counts landmasses with room for >= 8 towns (the PLAN
+# invariant, finally asserted); viable counts sampled cells a town could use.
+assert townmasses > 2
+assert viable > 24
