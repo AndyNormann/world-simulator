@@ -200,6 +200,99 @@ kill, discovery-driven alert, XP from the event queue.
 **M4 — the rest of the fantasy.** Disease tree, zombies, anchors, banishment and
 the fast-forward through the same tick loop.
 
+## Rendering hardening (flicker)
+
+### What is measured
+
+A **subpixel instability probe**: render two frames differing by a deliberate
+sub-pixel camera change, count pixels whose value moves by more than 8/255. A
+perfect renderer changes almost nothing for a 0.2-pixel shift; a shimmering one
+changes a lot. Current baseline at 800x450, seed 12, MSAA 4:
+
+| change | pixels > 8/255 |
+|---|---|
+| yaw 0.02 deg (≈0.22 px) | **5.60 %** |
+| pitch 0.02 deg | **2.22 %** (2.0 % of it in the upper half, i.e. sky+distant relief) |
+| pitch 0.02 deg, night | 0.52 % |
+| water half-screen, camera 0.02 u | 0.00 % |
+
+Facts established while measuring, so the pass does not relitigate them:
+
+- **MSAA is working.** Rendering at `GFX_MSAA=2` differs from 4 by mean 1.4 %.
+- **Reversed-Z is done** (that was the coastline z-fighting; it removed 12x of
+  the instability on the worst seed).
+- **`GFX_MSAA=1` aborts** (sokol rejects the resolve attachment with one
+  sample), so AA cannot be turned off from the command line today. That must be
+  made safe before anything is A/B'd.
+
+So the remaining shimmer is **geometric edge aliasing at 4x MSAA with no
+temporal component**, amplified by the art direction: `FACET_SHADES` gives every
+triangle a random brightness in 0.64..1.32, which maximises contrast between
+neighbouring facets, so every facet edge is a high-contrast edge that crawls
+under subpixel camera motion. "Especially going upwards" fits: pitching up fills
+the frame with distant, coarse-tier relief and its silhouette against a pale sky,
+which is exactly the worst case for edge flicker.
+
+### P0 — The harness (½ session)
+`game shot --flicker` renders a fixed path (pan, pitch up, walk forward, rise)
+and prints instability per frame pair, split sky / terrain / water. Freeze
+`anim_time` and the sun so only the camera moves. `tools/flicker.sh` runs it over
+three seeds and 2 sizes; `check.sh --slow` asserts the thresholds from P1–P4.
+Without this, every claim below is an opinion.
+
+### P1 — Sampling: kill the edges (1–2 sessions, biggest win)
+1. Make AA configurable and safe: `--aa 1|2|4|8`, constructing the resolve
+   attachment only when samples > 1. Fixes the abort and enables A/B.
+2. **SSAA in stills**: render at 2x and box-downsample in `capture()`. Costs
+   only shot time, which nobody is pacing. Goldens get re-recorded once, at the
+   higher quality, and never shimmer again.
+3. **TAA for the windowed path**: jitter the projection by a Halton(2,3)
+   sequence, reproject the previous frame with the previous view-projection
+   (camera-only motion is enough — the scene is static apart from tree sway),
+   clamp the history to the current 3x3 neighbourhood to kill ghosting, blend
+   0.85. Needs a depth-aware reprojection: the depth buffer is already a
+   float32 texture in reversed-Z, so world reconstruction is
+   `invVP * (uv, depth)`.
+   Acceptance: yaw-0.02 instability **< 0.5 %**.
+4. If TAA proves too much for the frame budget, SSAA 1.5x in the window is the
+   fallback and gets ~half the benefit for a fifth of the work.
+
+### P2 — Shading stability (1 session)
+- `FACET_SHADES` spread cut to **0.85..1.15** and driven by a hash of the
+  facet's *grid cell*, not its index in the mesh, so a rebuilt chunk gets the
+  same brightness. High-contrast facet noise is the amplifier; less of it is the
+  cheapest single change to the look.
+- **LOD invariance**: the baked horizon/AO of a chunk must come from the
+  heightfield at a fixed sampling density, not from the tier's mesh, so a tier
+  swap changes detail and never brightness. Test: build the same chunk at tier
+  1 and tier 2, compare mean luminance — must differ < 1 %.
+- Per-pixel shadows for near terrain remain out of scope; they are the second
+  reason distant slopes band, and a chunk-local shadow texture is the upgrade
+  path if the banding still reads after P1.
+
+### P3 — Streaming determinism (1 session)
+- Instrument and assert: chunks rebuilt per frame ≤ 8 while walking, buffers
+  created per frame ≤ 64 (already capped), no chunk drawn outside
+  `CHUNK_READY`.
+- Add hysteresis for *tier* transitions that scales with the camera's speed, so
+  running does not cross a band boundary every few frames.
+- Test: `chunk_build(ci, tier)` twice from different starting states must produce
+  byte-identical vertex data (the pass that would catch a hidden global).
+
+### P4 — Sky and water edges (½ session)
+- The near-water wave fade (60..400 units) is a hard ring: as the camera moves,
+  the *appearance* boundary sweeps across a smooth surface. Fade the wave
+  amplitude with a modulated threshold (`depth + noise*80`) or widen to
+  120..900.
+- Verify stars are anchored to world directions and do not resample under
+  rotation (night pitch 0.02 was already only 0.52 %, so this is a check, not a
+  fix).
+
+### P5 — Gate (½ session)
+`tools/flicker.sh` into `check.sh --slow` with the measured thresholds:
+pan/pitch < 0.5 %, water 0.0 %, and the rising-camera case < 2 %. Record the
+numbers in this table above so the next regression is a diff, not an argument.
+
 ## Rules that must not be broken by accident
 
 1. Anything indexed by world cell is a bug (see #4).
