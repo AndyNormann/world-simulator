@@ -115,6 +115,7 @@ int main(int argc, char *argv[]) {
     const char *cmd = (argc > 1 && argv[1][0] != '-') ? argv[1] : NULL;
     int first = cmd ? 2 : 1;              /* where the flags start */
     int dump_only = cmd && !strcmp(cmd, "dump");
+    int flicker_mode = 0;
     int years = 300, sim_check = 0;
 
     /* flag pass shared by every headless mode, plus the seed pre-scan for
@@ -144,6 +145,8 @@ int main(int argc, char *argv[]) {
         }
         else if (!strcmp(argv[i], "--years") && i + 1 < argc) years = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--check")) sim_check = 1;
+        else if (!strcmp(argv[i], "--flicker")) flicker_mode = 1;
+        else if (!strcmp(argv[i], "--ssaa") && i + 1 < argc) { gfx_ssaa = atoi(argv[++i]); ssaa_given = 1; }
         else if (!strcmp(argv[i], "--map") && i + 1 < argc) map_plain = !strcmp(argv[++i], "plain");
         else if (!strcmp(argv[i], "--replay") && i + 1 < argc) replay_path = argv[++i];
     }
@@ -177,6 +180,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "usage: game [shot|replay FILE|dump FILE|worldmap|history] [flags]\n"
                         "  flags: --seed N --cam x,y,z --yaw DEG --pitch DEG\n"
                         "         --time HOURS --size WxH --out FILE --trees-only\n"
+                        "         --flicker  (shot: sub-pixel stability numbers)\n"
+                        "         --ssaa N   (shot: supersample factor, default 2)\n"
                         "         --years N --check   (history)\n");
         return 1;
     }
@@ -188,7 +193,8 @@ int main(int argc, char *argv[]) {
     headless = 1;
     init();
     if (!strcmp(cmd, "shot")) {
-        capture(shot_path);
+        if (flicker_mode) flicker_probe();
+        else capture(shot_path);
     } else {
         /* `seed` in the script has to land before init() builds the world, so
            read the first command before doing anything else */

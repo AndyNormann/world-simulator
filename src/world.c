@@ -2330,6 +2330,19 @@ int world_ready(void) {
    main thread because releasing a buffer is a sokol call. */
 void chunks_update(void) {
     const float keep = FOG_FAR + CHUNK_WORLD * 0.75f;   /* evict beyond the haze */
+    /* Speed-scaled hysteresis: a walking camera crosses a band edge for a
+       couple of frames and would rebuild the same chunk twice; a running one
+       crosses several. The dead band therefore has to grow with motion, or
+       running along a boundary turns into continuous rebuilding -- which is
+       visible, because a rebuild changes the mesh and the shading. */
+    static float last_x = 0.0f, last_z = 0.0f;
+    static int have_last = 0;
+    float step_dist = have_last ? sqrtf((cam_x - last_x)*(cam_x - last_x)
+                                      + (cam_z - last_z)*(cam_z - last_z)) : 0.0f;
+    last_x = cam_x; last_z = cam_z; have_last = 1;
+    /* 60 units at rest; ~4 units of band per unit of per-frame travel */
+    float hyst = 60.0f + 4.0f * step_dist;
+    if (hyst > 240.0f) hyst = 240.0f;
     for (int i = 0; i < NCHUNKS; i++) {
         float ccx = ((float)chunks[i].cx + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
         float ccz = ((float)chunks[i].cz + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
@@ -2342,7 +2355,7 @@ void chunks_update(void) {
            chunk every frame. Inside the dead band the current tier stays. */
         if (chunk_state(&chunks[i]) == CHUNK_READY && want != 0 && want != chunks[i].tier) {
             float edge = (d < 0.5f * (TIER_1_MAX + TIER_2_MAX)) ? TIER_1_MAX : TIER_2_MAX;
-            if (fabsf(d - edge) < 60.0f) continue;
+            if (fabsf(d - edge) < hyst) continue;
         }
         if (chunks[i].buf.id != SG_INVALID_ID) {
             sg_destroy_buffer(chunks[i].buf);

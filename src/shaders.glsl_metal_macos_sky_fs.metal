@@ -27,6 +27,7 @@ struct sky_params
 struct main0_out
 {
     float4 frag [[color(0)]];
+    float4 frag_lin [[color(1)]];
 };
 
 struct main0_in
@@ -120,6 +121,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant sky_params& _27 [[bu
     }
     float2 param_2 = gl_FragCoord.xy;
     out.frag = float4(fast::clamp(c + float3(dither(param_2)), float3(0.0), float3(1.0)), 1.0);
+    out.frag_lin = float4(0.0);
     return out;
 }
 

@@ -99,7 +99,9 @@ void build_palette(float hours, float *pal) {
        is what an eye does -- transmittance alone would fade the scene to black
        long before the light actually left */
     float hm = 0.0f;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {          /* T and sc are RGB: this read past
+                                              the end for years, writing into
+                                              as[] and inflating hm */
         sc[i] = T[i] / lum * 0.95f;
         if (sc[i] > hm) hm = sc[i];              /* hue: the light, normalised */
     }
@@ -172,39 +174,122 @@ void build_palette(float hours, float *pal) {
    never touches a window or the window server. */
 
 
+/* --- render targets --------------------------------------------------------
+   Since the TAA pass needs the depth buffer as a texture, there is no
+   multisampling any more: MSAA's resolve target cannot be sampled, and
+   accumulating eight jittered frames beats four coverage samples anyway. The
+   pipeline is scene (1x) -> TAA (history ping-pong) -> present or readback. */
+static sg_image hd_color_img, hd_lin_img, hd_depth_img, hist_img[2];
+static sg_view hd_color_view, hd_lin_view, hd_depth_view, k_color_tex, k_lin_tex;
+static sg_view hist_view[2], hist_tex[2];
+static sg_sampler lin_smp, near_smp;
+static sg_pipeline taa_pip, present_pip;
+static float prev_vp[16];
+/* Frames accumulated since the camera last moved. The blend weight is n/(n+1),
+   so a still camera converges to the exact average of 16 jittered samples --
+   deterministic, which is what a golden image needs -- while a moving one
+   adapts immediately (first frame of new motion keeps no history at all). */
+static int taa_n = 0;
+static float taa_last_yaw = 1e9f, taa_last_pitch = 1e9f,
+             taa_last_x = 1e9f, taa_last_y = 1e9f, taa_last_z = 1e9f;
+static float prev_vp_valid = 0.0f;
+static int hist_cur = 0, hist_drawn = 0;
+static int tgt_w = 0, tgt_h = 0;
+static id<MTLTexture> mtl_hist[2];
+static id<MTLTexture> mtl_color, mtl_depth;
+
+#define TAA_BLEND 0.95f
+
+static void targets_free(void) {
+    if (tgt_w == 0) return;
+    for (int i = 0; i < 2; i++) { sg_destroy_view(hist_view[i]); sg_destroy_view(hist_tex[i]);
+                                  sg_destroy_image(hist_img[i]); }
+    sg_destroy_view(hd_color_view); sg_destroy_view(k_color_tex);
+    sg_destroy_view(hd_lin_view); sg_destroy_view(k_lin_tex);
+    sg_destroy_view(hd_depth_view);
+    sg_destroy_image(hd_color_img); sg_destroy_image(hd_lin_img); sg_destroy_image(hd_depth_img);
+    tgt_w = tgt_h = 0;
+}
+
+/* `inject` is the headless path: we make the Metal textures ourselves so the
+   readback can blit them without asking sokol for a pointer it does not expose. */
+static void targets_make(int w, int h, int inject) {
+    tgt_w = w; tgt_h = h;
+    id<MTLTexture> c = nil, l = nil, d = nil;
+    if (inject) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+            width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        c = [mtl_device newTextureWithDescriptor:td];
+
+        MTLTextureDescriptor *ld = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+            width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        ld.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        ld.storageMode = MTLStorageModePrivate;
+        l = [mtl_device newTextureWithDescriptor:ld];
+
+        MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+            width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        dd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        dd.storageMode = MTLStorageModePrivate;
+        d = [mtl_device newTextureWithDescriptor:dd];
+        mtl_color = c; mtl_depth = d;
+        for (int i = 0; i < 2; i++) {
+            MTLTextureDescriptor *hd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+            hd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+            hd.storageMode = MTLStorageModePrivate;
+            mtl_hist[i] = [mtl_device newTextureWithDescriptor:hd];
+        }
+    }
+    hd_color_img = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_RGBA8,
+                    .usage.color_attachment = true,
+                    .mtl_texture = (const void*)c, .label = "scene-color" });
+    hd_lin_img = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_R32F,
+                    .usage.color_attachment = true,
+                    .mtl_texture = (const void*)l, .label = "scene-lin" });
+    hd_depth_img = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_DEPTH,
+                    .usage.depth_stencil_attachment = true,
+                    .mtl_texture = (const void*)d, .label = "scene-depth" });
+    for (int i = 0; i < 2; i++) {
+        hist_img[i] = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_RGBA8,
+                    .usage.color_attachment = true,
+                    .mtl_texture = (const void*)(inject ? mtl_hist[i] : nil),
+                    .label = i ? "taa-hist-1" : "taa-hist-0" });
+    }
+    hd_color_view = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hd_color_img } });
+    hd_lin_view = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hd_lin_img } });
+    hd_depth_view = sg_make_view(&(sg_view_desc){ .depth_stencil_attachment = { .image = hd_depth_img } });
+    k_color_tex   = sg_make_view(&(sg_view_desc){ .texture = { .image = hd_color_img } });
+    k_lin_tex     = sg_make_view(&(sg_view_desc){ .texture = { .image = hd_lin_img } });
+    for (int i = 0; i < 2; i++) {
+        hist_view[i] = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hist_img[i] } });
+        hist_tex[i]  = sg_make_view(&(sg_view_desc){ .texture = { .image = hist_img[i] } });
+    }
+    hist_cur = 0;
+    prev_vp_valid = 0.0f;
+}
+
+void targets_ensure(int w, int h) {
+    if (w == tgt_w && h == tgt_h) return;
+    targets_free();
+    targets_make(w, h, headless);
+}
+
 void headless_gfx_setup(void) {
     mtl_device = MTLCreateSystemDefaultDevice();
     if (!mtl_device) { fprintf(stderr, "headless: no Metal device\n"); exit(1); }
-    /* MTLTexture properties are readonly on a live object, so the descriptor is
-       what gets configured; MSAA targets have to say so up front */
-    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-        width:(NSUInteger)gfx_w height:(NSUInteger)gfx_h mipmapped:NO];
-    td.textureType = MTLTextureType2DMultisample;
-    td.sampleCount = (NSUInteger)GFX_MSAA;
-    td.usage = MTLTextureUsageRenderTarget;
-    td.storageMode = MTLStorageModePrivate;
-    id<MTLTexture> color = [mtl_device newTextureWithDescriptor:td];
-
-    MTLTextureDescriptor *rd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-        width:(NSUInteger)gfx_w height:(NSUInteger)gfx_h mipmapped:NO];
-    rd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-    rd.storageMode = MTLStorageModePrivate;   /* read back via a blit */
-    mtl_resolve = [mtl_device newTextureWithDescriptor:rd];
-
-    MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-        width:(NSUInteger)gfx_w height:(NSUInteger)gfx_h mipmapped:NO];
-    dd.textureType = MTLTextureType2DMultisample;
-    dd.sampleCount = (NSUInteger)GFX_MSAA;
-    dd.usage = MTLTextureUsageRenderTarget;
-    dd.storageMode = MTLStorageModePrivate;
-    id<MTLTexture> depth = [mtl_device newTextureWithDescriptor:dd];
-    mtl_queue = [mtl_device newCommandQueue];
 
     sg_setup(&(sg_desc){
         .environment = {
             .defaults = { .color_format = SG_PIXELFORMAT_RGBA8,
                           .depth_format = SG_PIXELFORMAT_DEPTH,
-                          .sample_count = GFX_MSAA },
+                          .sample_count = 1 },
             .metal = { .device = (const void*)mtl_device },
         },
         .logger = { .func = game_logger },
@@ -212,43 +297,33 @@ void headless_gfx_setup(void) {
            17600 / (24 cells * 14.9) is a 50x50 grid = 2500 chunks */
         .buffer_pool_size = 4096,
     });
-    hd_color   = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
-                    .pixel_format = SG_PIXELFORMAT_RGBA8, .sample_count = GFX_MSAA,
-                    .usage.color_attachment = true,
-                    .mtl_texture = (const void*)color, .label = "hd-color" });
-    /* sample_count is explicit: sg_environment.defaults.sample_count is 4, so
-       an unset one would ask for a multisampled resolve target */
-    hd_resolve = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
-                    .pixel_format = SG_PIXELFORMAT_RGBA8, .sample_count = 1,
-                    .usage.resolve_attachment = true, .usage.copy_src = true,
-                    .mtl_texture = (const void*)mtl_resolve, .label = "hd-resolve" });
-    hd_depth   = sg_make_image(&(sg_image_desc){ .width = gfx_w, .height = gfx_h,
-                    .pixel_format = SG_PIXELFORMAT_DEPTH, .sample_count = GFX_MSAA,
-                    .usage.depth_stencil_attachment = true,
-                    .mtl_texture = (const void*)depth, .label = "hd-depth" });
-    hd_color_view   = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hd_color } });
-    hd_resolve_view = sg_make_view(&(sg_view_desc){ .resolve_attachment = { .image = hd_resolve } });
-    hd_depth_view   = sg_make_view(&(sg_view_desc){ .depth_stencil_attachment = { .image = hd_depth } });
+    /* The readback blit MUST go on sokol's own queue: command buffers on two
+       different queues have no ordering, so the blit could copy the texture
+       before the frame that filled it had run, and the shot would be one frame
+       stale at random. Same queue = same order, no fence needed. */
+    mtl_queue = (id<MTLCommandQueue>)(void*)sg_mtl_command_queue();
+    fb_w = gfx_w * gfx_ssaa;
+    fb_h = gfx_h * gfx_ssaa;
+    targets_make(fb_w, fb_h, 1);
 }
 
-/* Copy the resolved frame into `dst` (RGBA8, row-major, top-left origin).
-   Metal's render target origin is already top-left, so unlike the old
-   glReadPixels path there is no flip. */
+/* Read the final (TAA-accumulated) frame into `dst` (RGBA8, top-left origin). */
 void headless_readback(unsigned char *dst) {
-    NSUInteger row = (NSUInteger)gfx_w * 4;
-    id<MTLBuffer> buf = [mtl_device newBufferWithLength:row * (NSUInteger)gfx_h
+    id<MTLTexture> src = mtl_hist[hist_drawn];
+    NSUInteger row = (NSUInteger)fb_w * 4;
+    id<MTLBuffer> buf = [mtl_device newBufferWithLength:row * (NSUInteger)fb_h
                                                 options:MTLResourceStorageModeShared];
     id<MTLCommandBuffer> cmdbuf = [mtl_queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cmdbuf blitCommandEncoder];
-    [blit copyFromTexture:mtl_resolve sourceSlice:0 sourceLevel:0
+    [blit copyFromTexture:src sourceSlice:0 sourceLevel:0
              sourceOrigin:MTLOriginMake(0, 0, 0)
-               sourceSize:MTLSizeMake((NSUInteger)gfx_w, (NSUInteger)gfx_h, 1)
+               sourceSize:MTLSizeMake((NSUInteger)fb_w, (NSUInteger)fb_h, 1)
                  toBuffer:buf destinationOffset:0
-        destinationBytesPerRow:row destinationBytesPerImage:row * (NSUInteger)gfx_h];
+        destinationBytesPerRow:row destinationBytesPerImage:row * (NSUInteger)fb_h];
     [blit endEncoding];
     [cmdbuf commit];
     [cmdbuf waitUntilCompleted];
-    memcpy(dst, [buf contents], (size_t)row * (size_t)gfx_h);
+    memcpy(dst, [buf contents], (size_t)row * (size_t)fb_h);
     [buf release];
 }
 
@@ -270,6 +345,14 @@ void init(void) {
            17600 / (24 cells * 14.9) is a 50x50 grid = 2500 chunks */
         .buffer_pool_size = 4096,
     });
+    /* A window is never supersampled: temporal accumulation is the AA there and
+       a 2x framebuffer would cost 4x the fill for a marginal gain. --ssaa N
+       can still raise it for a benchmark. */
+    if (!ssaa_given) gfx_ssaa = 1;
+    if (gfx_ssaa < 1) gfx_ssaa = 1;
+    fb_w = sapp_width() * gfx_ssaa;
+    fb_h = sapp_height() * gfx_ssaa;
+    targets_make(fb_w, fb_h, 0);
     }
     terrain_check_resolution(CELL);
     draw_distance_check();
@@ -302,6 +385,14 @@ void init(void) {
         /* depth unset defaults to ALWAYS/no-write, which paints over itself */
         .depth.compare = SG_COMPAREFUNC_GREATER_EQUAL,   /* reversed-Z */
         .depth.write_enabled = true,
+        /* second target: linear view depth, what the temporal pass reprojects
+           with. One extra float per pixel, and no depth-buffer sampling. */
+        .color_count = 2,
+        /* the offscreen scene target is RGBA8 in both paths; without this the
+           default follows the window's swapchain (BGRA8) and the pipeline is
+           rejected against our own attachment */
+        .colors[0].pixel_format = SG_PIXELFORMAT_RGBA8,
+        .colors[1].pixel_format = SG_PIXELFORMAT_R32F,
     });
     bindings.vertex_buffers[0] = vbuf;
 
@@ -310,6 +401,41 @@ void init(void) {
         .shader = sky_shd,
         .layout.buffers[0].stride = 0,
         .index_type = SG_INDEXTYPE_NONE,
+        .depth.compare = SG_COMPAREFUNC_ALWAYS,
+        .depth.write_enabled = false,
+        .color_count = 2,
+        .colors[0].pixel_format = SG_PIXELFORMAT_RGBA8,
+        .colors[1].pixel_format = SG_PIXELFORMAT_R32F,
+    });
+    lin_smp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "linear-clamp" });
+    /* depth32float cannot be filtered, so the depth read is nearest */
+    near_smp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_NEAREST, .mag_filter = SG_FILTER_NEAREST,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+        .label = "nearest-clamp" });
+    sg_shader taa_shd = sg_make_shader(quad_shader_desc(sg_query_backend()));
+    taa_pip = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = taa_shd,
+        .layout.buffers[0].stride = 0,
+        .index_type = SG_INDEXTYPE_NONE,
+        .depth.pixel_format = SG_PIXELFORMAT_NONE,   /* no depth attachment */
+        .colors[0].pixel_format = SG_PIXELFORMAT_RGBA8,
+        .depth.compare = SG_COMPAREFUNC_ALWAYS,
+        .depth.write_enabled = false,
+    });
+    sg_shader pre_shd = sg_make_shader(present_shader_desc(sg_query_backend()));
+    present_pip = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = pre_shd,
+        .layout.buffers[0].stride = 0,
+        .index_type = SG_INDEXTYPE_NONE,
+        /* offscreen passes want NONE, but a swapchain pass requires the
+           pipeline's formats to equal the swapchain's, even when nothing is
+           tested or written. Created for the window only. */
+        .depth.pixel_format = headless ? SG_PIXELFORMAT_NONE : SG_PIXELFORMAT_DEPTH,
+        .colors[0].pixel_format = headless ? SG_PIXELFORMAT_RGBA8 : SG_PIXELFORMAT_BGRA8,
         .depth.compare = SG_COMPAREFUNC_ALWAYS,
         .depth.write_enabled = false,
     });
@@ -323,15 +449,96 @@ void init(void) {
    scripted input produces the same camera path on any machine, which is what
    makes a replay a test rather than a different program. */
 
+/* Sub-pixel offsets are a base-2 / base-3 Halton sequence: eight frames land
+   on eight evenly spread positions inside the pixel, which is what turns the
+   temporal blend into real supersampling instead of a blur. */
+static float halton(int i, int base) {
+    float f = 1.0f, r = 0.0f;
+    while (i > 0) { f /= (float)base; r += f * (float)(i % base); i /= base; }
+    return r;
+}
+
+static void taa_pass(int rw, int rh, float jx, float jy, float wgt, float fx, float fy, float fz) {
+    const float tan_half = 0.54630249f;      /* tan(0.5 * fovy), fovy = 1.0 */
+    const float aspect = (float)rw / (float)rh;
+    float right[3] = { -cosf(yaw), 0.0f, sinf(yaw) };
+    float up[3] = { -sinf(yaw) * sinf(pitch), cosf(pitch), -cosf(yaw) * sinf(pitch) };
+    float tp[36];
+    tp[0] = fx; tp[1] = fy; tp[2] = fz; tp[3] = 0.0f;
+    for (int i = 0; i < 3; i++) tp[4+i] = right[i] * tan_half * aspect;
+    tp[7] = 1.0f / (float)rw;
+    for (int i = 0; i < 3; i++) tp[8+i] = up[i] * tan_half;
+    tp[11] = 1.0f / (float)rh;
+    tp[12] = cam_x; tp[13] = cam_y; tp[14] = cam_z; tp[15] = wgt;
+    memcpy(&tp[16], prev_vp, sizeof(prev_vp));
+    tp[32] = 0.1f / (FAR_PLANE - 0.1f);                 /* refit with any near plane */
+    tp[33] = (0.1f * FAR_PLANE) / (FAR_PLANE - 0.1f);
+    tp[34] = jx; tp[35] = jy;
+
+    sg_bindings tb = {0};
+    tb.views[0] = k_color_tex;
+    tb.views[1] = hist_tex[hist_cur ^ 1];
+    tb.views[2] = k_lin_tex;
+    tb.samplers[0] = lin_smp;
+    tb.samplers[1] = lin_smp;
+    tb.samplers[2] = lin_smp;
+
+    sg_begin_pass(&(sg_pass){ .action = { .colors[0] = { .load_action = SG_LOADACTION_DONTCARE } },
+                              .attachments = { .colors[0] = hist_view[hist_cur] } });
+    sg_apply_pipeline(taa_pip);
+    sg_apply_bindings(&tb);
+    sg_apply_uniforms(0, &(sg_range){ .ptr = tp, .size = sizeof(tp) });
+    sg_draw(0, 3, 1);
+    sg_end_pass();
+    hist_drawn = hist_cur;
+    hist_cur ^= 1;
+}
+
+static void present_pass(void) {
+    if (headless) return;                    /* the shot blits hist_drawn instead */
+    sg_bindings pb = {0};
+    pb.views[0] = hist_tex[hist_drawn];
+    pb.samplers[0] = lin_smp;
+    sg_begin_pass(&(sg_pass){ .action = { .colors[0] = { .load_action = SG_LOADACTION_DONTCARE } },
+                              .swapchain = sglue_swapchain() });
+    sg_apply_pipeline(present_pip);
+    sg_apply_bindings(&pb);
+    sg_draw(0, 3, 1);
+    sg_end_pass();
+}
+
 void render(int w, int h) {
     float fx = sinf(yaw) * cosf(pitch);
     float fy = sinf(pitch);
     float fz = cosf(yaw) * cosf(pitch);
     float rx = -cosf(yaw), rz = sinf(yaw);
 
+    int rw = w * gfx_ssaa, rh = h * gfx_ssaa;
+    targets_ensure(rw, rh);
+
+    /* Jitter the projection by a different sub-pixel offset each frame: the
+       TAA pass averages the results, so eight frames behave like a 2x2-to-3x3
+       supersample without the memory. m[8] carries the x offset because
+       clip.w = -z_view, so adding jx*clip.w is m[8] -= jx. */
+    if (yaw != taa_last_yaw || pitch != taa_last_pitch || cam_x != taa_last_x
+        || cam_y != taa_last_y || cam_z != taa_last_z) {
+        taa_n = 0;
+        taa_last_yaw = yaw; taa_last_pitch = pitch;
+        taa_last_x = cam_x; taa_last_y = cam_y; taa_last_z = cam_z;
+    } else {
+        taa_n++;             /* uncapped: the jitter must keep cycling after the
+                                weight saturates, or a still camera freezes on
+                                one sample instead of averaging sixteen */
+    }
+    int ji = taa_n & 15;
+    float jx = (halton(ji + 1, 2) - 0.5f) * 2.0f / (float)rw;
+    float jy = (halton(ji + 1, 3) - 0.5f) * 2.0f / (float)rh;
+
     float view[16], proj[16], mvp[16];
     mat4_lookat(view, cam_x, cam_y, cam_z, cam_x+fx, cam_y+fy, cam_z+fz);
-    mat4_perspective(proj, 1.0f, (float)w/(float)h, 0.1f, FAR_PLANE);
+    mat4_perspective(proj, 1.0f, (float)rw/(float)rh, 0.1f, FAR_PLANE);
+    proj[8] -= jx;
+    proj[9] -= jy;
     mat4_mul(mvp, proj, view);
 
     /* --- day/night palette + animation state, uploaded as one blob --- */
@@ -343,7 +550,7 @@ void render(int w, int h) {
         const float tan_half = 0.54630249f;   /* tan(0.5 * fovy), fovy = 1.0 */
         pal[9*4+0] = fx; pal[9*4+1] = fy; pal[9*4+2] = fz; pal[9*4+3] = tan_half;
         pal[10*4+0] = -cosf(yaw); pal[10*4+1] = 0.0f; pal[10*4+2] = sinf(yaw);
-        pal[10*4+3] = (float)w/(float)h;
+        pal[10*4+3] = (float)rw/(float)rh;
         pal[11*4+0] = -sinf(yaw)*sinf(pitch);
         pal[11*4+1] = cosf(pitch);
         pal[11*4+2] = -cosf(yaw)*sinf(pitch);
@@ -412,39 +619,44 @@ void render(int w, int h) {
     if (loaded && build_async_ms == 0.0 && builder_started)
         build_async_ms = stm_sec(stm_now() - builder_t0) * 1000.0;
     pal[14*4+0] = NCHUNKS ? (float)nchunks_ready() / (float)NCHUNKS : 1.0f;
-    pal[14*4+1] = 1.0f / (float)w;
-    pal[14*4+2] = 1.0f / (float)h;
+    pal[14*4+1] = 1.0f / (float)rw;
+    pal[14*4+2] = 1.0f / (float)rh;
     pal[14*4+3] = loaded ? 0.0f : 1.0f;
 
-    /* one pass, two ways to name the attachments: a window drawable, or our
-       own textures when there is no window at all */
-    if (headless) {
-        sg_begin_pass(&(sg_pass){ .action = pass_action, .attachments = {
-            .colors[0] = hd_color_view, .resolves[0] = hd_resolve_view,
-            .depth_stencil = hd_depth_view } });
-    } else {
-        sg_begin_pass(&(sg_pass){ .action = pass_action, .swapchain = sglue_swapchain() });
-    }
+    /* The scene always goes to our own target; the window only ever receives
+       the accumulated frame. That is what makes the same code path serve a
+       shot and a play session. */
+    sg_begin_pass(&(sg_pass){ .action = { .colors[0] = pass_action.colors[0],
+                                          .colors[1] = { .load_action = SG_LOADACTION_CLEAR, .clear_value = {0,0,0,0} },
+                                          .depth = pass_action.depth },
+                              .attachments = {
+        .colors[0] = hd_color_view, .colors[1] = hd_lin_view,
+        .depth_stencil = hd_depth_view } });
     sg_apply_pipeline(sky_pip);
     sg_apply_uniforms(0, &(sg_range){ .ptr = pal, .size = sizeof(pal) });
     sg_draw(0, 3, 1);
     if (!loaded) {
-        /* the capture below is gated on world_ready() as well, so leaving the
-           pass here cannot photograph the loading screen */
+        /* the capture below is gated on world_ready() as well, so leaving here
+           cannot photograph the loading screen; the TAA pass still runs, with
+           zero weight, so the flow stays one shape */
         frame_count++;
         sg_end_pass();
+        taa_pass(rw, rh, jx, jy, 0.0f, fx, fy, fz);
+        present_pass();
+        prev_vp_valid = 0.0f;    /* the first real frame starts from nothing */
         sg_commit();
         return;
     }
     sg_apply_pipeline(pip);
     sg_apply_uniforms(0, &(sg_range){ .ptr = pal, .size = sizeof(pal) });
     sg_apply_uniforms(1, &(sg_range){ .ptr = vsu, .size = sizeof(vsu) });
+    int drawn_words = 0;
     {
         /* one draw per chunk, thrown away when its bounding sphere is off
            screen: a sphere-vs-frustum test using the basis already in hand */
         float ux = -sinf(yaw) * sinf(pitch), uy = cosf(pitch), uz = -cosf(yaw) * sinf(pitch);
         const float tanv = 0.54630249f;      /* tan(0.5 * fovy), fovy = 1.0 */
-        float tanh_h = tanv * (float)w / (float)h;
+        float tanh_h = tanv * (float)rw / (float)rh;
         chunks_drawn = 0;
         for (int i = 0; i < NCHUNKS; i++) {
             if (chunk_state(&chunks[i]) != CHUNK_READY || chunks[i].words == 0) continue;
@@ -462,14 +674,27 @@ void render(int w, int h) {
             sg_apply_bindings(&bindings);
             sg_draw(0, chunks[i].words / VERT_FLOATS, 1);
             chunks_drawn++;
+            drawn_words += chunks[i].words;
         }
     }
+    if (getenv("LODDBG"))
+        fprintf(stderr, "lod: drawn=%d verts=%d\n", chunks_drawn, drawn_words / VERT_FLOATS);
     /* sea plane, clouds, birds: one buffer, always drawn */
     bindings.vertex_buffers[0] = vbuf;
     sg_apply_bindings(&bindings);
     sg_draw(0, decor_words / VERT_FLOATS, 1);
-    frame_count++;
     sg_end_pass();
+    {
+        int n = taa_n < 63 ? taa_n : 63;   /* progressive: the newest sample
+                                                weighs 1/(n+1), so a still frame
+                                                converges instead of rippling */
+        taa_pass(rw, rh, jx, jy, prev_vp_valid ? (float)n / (float)(n + 1) : 0.0f,
+                 fx, fy, fz);
+    }
+    present_pass();
+    memcpy(prev_vp, mvp, sizeof(prev_vp));
+    prev_vp_valid = 1.0f;
+    frame_count++;
     sg_commit();
 }
 
@@ -515,13 +740,132 @@ char *with_suffix(const char *path, const char *suffix) {
     return o;
 }
 
+/* --- flicker probe ---------------------------------------------------------
+   The renderer is judged by sub-pixel stability: render the same frame twice,
+   with the camera moved by a fraction of a pixel, and count the pixels that
+   move by more than 8/255. Edge aliasing shows up as a large number here and
+   nowhere else, which is why this is the gate a rendering change has to pass.
+
+   Everything except the camera is frozen (the shot path never advances
+   anim_time or the sun), so a difference is the renderer's, not the scene's. */
+
+static float flicker_pct(const unsigned char *a, const unsigned char *b, int only_top) {
+    size_t n = (size_t)gfx_w * (size_t)gfx_h;
+    size_t end = only_top ? n * 55 / 100 : n;
+    size_t bad = 0;
+    for (size_t i = 0; i < end; i++) {
+        int d = 0;
+        for (int c = 0; c < 3; c++) {
+            int v = (int)a[i*4+c] - (int)b[i*4+c];
+            if (v < 0) v = -v;
+            if (v > d) d = v;
+        }
+        if (d > 8) bad++;
+    }
+    return 100.0f * (float)bad / (float)end;
+}
+
+void shrink_to(unsigned char *dst, int dw, int dh,
+                      const unsigned char *src, int sw, int sh);
+
+/* One frame at the internal size, boxed down to the requested size. Every
+   headless consumer sees gfx_w x gfx_h; the supersampling is this function's
+   business alone. */
+static unsigned char *grab(void) {
+    size_t big = (size_t)fb_w * (size_t)fb_h * 4;
+    size_t small = (size_t)gfx_w * (size_t)gfx_h * 4;
+    if (!fb_buf) fb_buf = (unsigned char*)malloc(big);
+    if (!cap_buf) cap_buf = (unsigned char*)malloc(small);
+    render(gfx_w, gfx_h);
+    headless_readback(fb_buf);
+    if (gfx_ssaa > 1) shrink_to(cap_buf, gfx_w, gfx_h, fb_buf, fb_w, fb_h);
+    else memcpy(cap_buf, fb_buf, small);
+    return cap_buf;
+}
+
+/* TAA is a filter with a memory, so a single frame is not representative:
+   settle on a camera, measure, settle again. The number that matters is how
+   different the *converged* images are for a sub-pixel camera change -- that is
+   the shimmer a player sees while walking. */
+static void settle(int frames) {
+    /* start every measurement from a known accumulator: a value that depends on
+       how many frames the streamer happened to need is not a measurement */
+    prev_vp_valid = 0.0f;
+    taa_n = 0;
+    for (int i = 0; i < frames; i++) grab();
+}
+
+void flicker_probe(void) {
+    uint64_t t0 = stm_now();
+    do {
+        grab();
+        if (stm_sec(stm_now() - t0) > SHOT_PUMP_TIMEOUT) {
+            fprintf(stderr, "flicker: world not ready after %.0fs\n", SHOT_PUMP_TIMEOUT);
+            exit(1);
+        }
+    } while (!world_ready());
+    size_t bytes = (size_t)gfx_w * (size_t)gfx_h * 4;
+    unsigned char *base = (unsigned char*)malloc(bytes);
+    unsigned char *alt  = (unsigned char*)malloc(bytes);
+
+    const float yaw0 = yaw, pitch0 = pitch, cy0 = cam_y, cx0 = cam_x, cz0 = cam_z;
+    struct { const char *name; float dyaw, dpitch, dcam; } cases[] = {
+        { "static",0.0f,      0.0f,      0.0f },   /* must be ~0: TAA converging */
+        { "yaw",   0.000349f, 0.0f,      0.0f },   /* ~0.22 px at 800 wide */
+        { "pitch", 0.0f,      0.000349f, 0.0f },
+        { "rise",  0.0f,      0.0f,      0.05f },  /* geometry-invisible: catches streaming */
+    };
+    float res[4];
+    for (int i = 0; i < 4; i++) {
+        yaw = yaw0; pitch = pitch0; cam_y = cy0;
+        settle(48);
+        memcpy(base, cap_buf, bytes);
+        yaw = yaw0 + cases[i].dyaw;
+        pitch = pitch0 + cases[i].dpitch;
+        cam_y = cy0 + cases[i].dcam;
+        settle(48);
+        memcpy(alt, cap_buf, bytes);
+        res[i] = flicker_pct(base, alt, 0);
+    }
+    /* Walking: what the player actually reports is the wobble of the image
+       from frame to frame while moving, so step the camera a fixed small
+       amount and average the consecutive-frame differences. */
+    yaw = yaw0; pitch = pitch0; cam_y = cy0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    float walk = 0.0f;
+    for (int i = 0; i < 30; i++) {
+        cam_x += sinf(yaw) * 0.6f;
+        cam_z += cosf(yaw) * 0.6f;
+        grab();
+        walk += flicker_pct(base, cap_buf, 0);
+        memcpy(base, cap_buf, bytes);
+    }
+    walk /= 30.0f;
+    cam_x = cx0; cam_z = cz0;      /* the walk moved the camera: put it back, or
+                                      every measurement after this one is taken
+                                      from somewhere else */
+
+    yaw = yaw0; pitch = pitch0; cam_y = cy0;
+    settle(48);
+    memcpy(alt, cap_buf, bytes);
+    yaw = yaw0; pitch = pitch0; cam_y = cy0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% top=%.2f%%\n",
+           terrain_seed, gfx_w, gfx_h, gfx_ssaa, res[0], res[1], res[2], res[3], walk,
+           flicker_pct(base, alt, 1));
+    fflush(stdout);
+    free(base); free(alt);
+}
+
 void capture(const char *path) {
     /* do/while, not while: before the first render nothing is queued yet, so
        world_ready() is trivially true and the capture would photograph an
        empty world. The first render is what asks the streamer for chunks. */
     uint64_t t0 = stm_now();
     do {
-        render(gfx_w, gfx_h);
+        grab();
         if (stm_sec(stm_now() - t0) > SHOT_PUMP_TIMEOUT) {
             fprintf(stderr, "capture %s: world not ready after %.0fs "
                             "(%d of %d chunks), giving up\n",
@@ -529,9 +873,10 @@ void capture(const char *path) {
             exit(1);
         }
     } while (!world_ready());
-    size_t bytes = (size_t)gfx_w * (size_t)gfx_h * 4;
-    if (!cap_buf) cap_buf = (unsigned char*)malloc(bytes);
-    headless_readback(cap_buf);
+    /* let the temporal filter converge to its 16-sample average: its state is
+       otherwise "however many frames the streamer happened to need", and this
+       is a golden image */
+    settle(48);
     stbi_write_png(path, gfx_w, gfx_h, 4, cap_buf, gfx_w * 4);
 
     /* the downscale is written here rather than in a second command: an agent

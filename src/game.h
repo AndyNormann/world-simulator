@@ -220,7 +220,7 @@ GV(float peak_z,0.0f)
 GV(int tree_nb,0)
 GV(int *tree_bstart,NULL)
 GV(int *tree_blist,NULL)
-GV(const float FACET_SHADES[4],{ 0.64f, 0.86f, 1.10f, 1.32f })
+GV(const float FACET_SHADES[4],{ 0.82f, 0.94f, 1.06f, 1.18f })
 G(float seg_x0[RIVER_MAX_SEG], seg_z0[RIVER_MAX_SEG])
 G(float seg_x1[RIVER_MAX_SEG], seg_z1[RIVER_MAX_SEG])
 G(float seg_w[RIVER_MAX_SEG], seg_hw[RIVER_MAX_SEG])
@@ -293,16 +293,24 @@ GV(const float NIGHT_AMBG[3],{ 0.030f, 0.035f, 0.055f })
 GV(const float NIGHT_FILL[3],{ 0.020f, 0.030f, 0.060f })
 GV(int gfx_w,1280)
 GV(int gfx_h,720)
-GV(const int GFX_MSAA,4) /* silhouettes against sky are the aliasing */
+/* No MSAA: the TAA pass needs to read the depth buffer, and a multisampled
+   one cannot be sampled. Temporal accumulation is the anti-aliasing. */
+GV(const int GFX_MSAA,1)
+/* Stills are supersampled: render ssaa x ssaa the requested size and box it
+   down. Costs only shot time, which nothing is waiting on, and buys more edge
+   quality than any MSAA level. A moving window cannot afford it. */
+GV(int gfx_ssaa,2)
+GV(int ssaa_given,0)
+GV(int fb_w,0)   /* internal render size: gfx_w * gfx_ssaa */
+GV(int fb_h,0)
 GV(id<MTLDevice> mtl_device,nil)
 GV(id<MTLCommandQueue> mtl_queue,nil)
-GV(id<MTLTexture> mtl_resolve,nil) /* ours, so readback needs no digging */
-G(sg_image hd_color, hd_resolve, hd_depth)
-G(sg_view hd_color_view, hd_resolve_view, hd_depth_view)
+void targets_ensure(int w, int h);
 GV(float move_t,0.0f) /* active scripted move, s */
 GV(float move_dur,0.0f) /* active scripted move, s */
 G(float move_x0, move_y0, move_z0, move_x1, move_y1, move_z1)
 GV(unsigned char *cap_buf,NULL) /* reused across shots */
+GV(unsigned char *fb_buf,NULL) /* full-res supersampled readback */
 GV(double replay_now,0.0) /* sim seconds since the script started */
 GV(int render_ok,1) /* 0 in `dump` mode: sim only, no GPU */
 GV(int replay_line,0)
@@ -423,6 +431,7 @@ void cleanup(void);
 void shrink_to(unsigned char *dst, int dw, int dh, const unsigned char *src, int sw, int sh);
 char *with_suffix(const char *path, const char *suffix);
 void capture(const char *path);
+void flicker_probe(void);
 void replay_die(const char *fmt, ...);
 void advance(float seconds);
 void key_by_name(const char *name, int down);

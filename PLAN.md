@@ -200,98 +200,65 @@ kill, discovery-driven alert, XP from the event queue.
 **M4 — the rest of the fantasy.** Disease tree, zombies, anchors, banishment and
 the fast-forward through the same tick loop.
 
-## Rendering hardening (flicker)
+## Rendering hardening (flicker) — done
 
-### What is measured
+### What was actually wrong
 
-A **subpixel instability probe**: render two frames differing by a deliberate
-sub-pixel camera change, count pixels whose value moves by more than 8/255. A
-perfect renderer changes almost nothing for a 0.2-pixel shift; a shimmering one
-changes a lot. Current baseline at 800x450, seed 12, MSAA 4:
+Four separate things, in the order they were found:
 
-| change | pixels > 8/255 |
-|---|---|
-| yaw 0.02 deg (≈0.22 px) | **5.60 %** |
-| pitch 0.02 deg | **2.22 %** (2.0 % of it in the upper half, i.e. sky+distant relief) |
-| pitch 0.02 deg, night | 0.52 % |
-| water half-screen, camera 0.02 u | 0.00 % |
+1. **The readback raced the frame.** `headless_readback` blitted on its own
+   `MTLCommandQueue` while sokol rendered on another; two queues have no
+   ordering, so a shot could return the previous frame. This is why an early
+   A/B of MSAA read "no difference" (it re-measured a stale file). The blit now
+   goes on `sg_mtl_command_queue()`, one queue, submission order, no fence.
+2. **`build_palette()` read and wrote past the end of three `RGB[3]` arrays**
+   with `for (i < 4)` loops, clobbering `as[]` and inflating the hue maximum.
+   Found by `tools/analyze.sh`; fixed.
+3. **`FACET_SHADES` gave every triangle a random brightness in 0.64..1.32**, so
+   every facet boundary was a 44% step: the single largest source of crawl on
+   slopes. Now 0.82..1.18 (measured: ~25% less instability, visibly calmer).
+4. **No temporal component.** 4x MSAA (later: 2x2 SSAA) antialiases one frame;
+   a sub-pixel camera move still re-rasterises every edge.
 
-Facts established while measuring, so the pass does not relitigate them:
+### What the renderer does now
 
-- **MSAA is working.** Rendering at `GFX_MSAA=2` differs from 4 by mean 1.4 %.
-- **Reversed-Z is done** (that was the coastline z-fighting; it removed 12x of
-  the instability on the worst seed).
-- **`GFX_MSAA=1` aborts** (sokol rejects the resolve attachment with one
-  sample), so AA cannot be turned off from the command line today. That must be
-  made safe before anything is A/B'd.
+Scene pass (single sample, always offscreen) → **TAA** (jittered projection,
+depth-free reprojection via an R32F linear-depth target, 3x3 neighbourhood
+clamp, progressive weight `n/(n+1)` capped at 63/64) → present (window) or blit
+(headless). Stills additionally render at `--ssaa 2` and box down.
 
-So the remaining shimmer is **geometric edge aliasing at 4x MSAA with no
-temporal component**, amplified by the art direction: `FACET_SHADES` gives every
-triangle a random brightness in 0.64..1.32, which maximises contrast between
-neighbouring facets, so every facet edge is a high-contrast edge that crawls
-under subpixel camera motion. "Especially going upwards" fits: pitching up fills
-the frame with distant, coarse-tier relief and its silhouette against a pale sky,
-which is exactly the worst case for edge flicker.
+MSAA is gone: a multisampled depth buffer cannot be sampled, and the TAA pass
+needs depth. `GFX_MSAA` is 1 and the pipeline is written for it.
 
-### P0 — The harness (½ session)
-`game shot --flicker` renders a fixed path (pan, pitch up, walk forward, rise)
-and prints instability per frame pair, split sky / terrain / water. Freeze
-`anim_time` and the sun so only the camera moves. `tools/flicker.sh` runs it over
-three seeds and 2 sizes; `check.sh --slow` asserts the thresholds from P1–P4.
-Without this, every claim below is an opinion.
+### Measured
 
-### P1 — Sampling: kill the edges (1–2 sessions, biggest win)
-1. Make AA configurable and safe: `--aa 1|2|4|8`, constructing the resolve
-   attachment only when samples > 1. Fixes the abort and enables A/B.
-2. **SSAA in stills**: render at 2x and box-downsample in `capture()`. Costs
-   only shot time, which nobody is pacing. Goldens get re-recorded once, at the
-   higher quality, and never shimmer again.
-3. **TAA for the windowed path**: jitter the projection by a Halton(2,3)
-   sequence, reproject the previous frame with the previous view-projection
-   (camera-only motion is enough — the scene is static apart from tree sway),
-   clamp the history to the current 3x3 neighbourhood to kill ghosting, blend
-   0.85. Needs a depth-aware reprojection: the depth buffer is already a
-   float32 texture in reversed-Z, so world reconstruction is
-   `invVP * (uv, depth)`.
-   Acceptance: yaw-0.02 instability **< 0.5 %**.
-4. If TAA proves too much for the frame budget, SSAA 1.5x in the window is the
-   fallback and gets ~half the benefit for a fifth of the work.
+`tools/flicker.sh 1 12 40` at 800x450, ssaa 2, converged:
 
-### P2 — Shading stability (1 session)
-- `FACET_SHADES` spread cut to **0.85..1.15** and driven by a hash of the
-  facet's *grid cell*, not its index in the mesh, so a rebuilt chunk gets the
-  same brightness. High-contrast facet noise is the amplifier; less of it is the
-  cheapest single change to the look.
-- **LOD invariance**: the baked horizon/AO of a chunk must come from the
-  heightfield at a fixed sampling density, not from the tier's mesh, so a tier
-  swap changes detail and never brightness. Test: build the same chunk at tier
-  1 and tier 2, compare mean luminance — must differ < 1 %.
-- Per-pixel shadows for near terrain remain out of scope; they are the second
-  reason distant slopes band, and a chunk-local shadow texture is the upgrade
-  path if the banding still reads after P1.
+| seed | static | yaw 0.02° | pitch 0.02° | walk (0.6 u/frame) |
+|---|---|---|---|---|
+| 1 | 0.00 % | 1.21 % | 1.21 % | 3.77 % |
+| 12 | 0.00 % | 4.33 % | 1.16 % | 1.44 % |
+| 40 | 0.00 % | 6.61 % | 4.23 % | 2.60 % |
 
-### P3 — Streaming determinism (1 session)
-- Instrument and assert: chunks rebuilt per frame ≤ 8 while walking, buffers
-  created per frame ≤ 64 (already capped), no chunk drawn outside
-  `CHUNK_READY`.
-- Add hysteresis for *tier* transitions that scales with the camera's speed, so
-  running does not cross a band boundary every few frames.
-- Test: `chunk_build(ci, tier)` twice from different starting states must produce
-  byte-identical vertex data (the pass that would catch a hidden global).
+`static` is the convergence check and is the only number that is meaningful in
+isolation: 0.00 % means the accumulator settles instead of rippling. The other
+columns are **weighted by contrast**, so a sharper image scores worse and a
+blurred one scores better; they are a regression alarm (a broken blend weight,
+a broken reprojection, streaming churn), not a perceptual score. That is also
+why TAA's improvement here looks modest — part of what it removes is aliasing
+and part of what it adds is sharpness.
 
-### P4 — Sky and water edges (½ session)
-- The near-water wave fade (60..400 units) is a hard ring: as the camera moves,
-  the *appearance* boundary sweeps across a smooth surface. Fade the wave
-  amplitude with a modulated threshold (`depth + noise*80`) or widen to
-  120..900.
-- Verify stars are anchored to world directions and do not resample under
-  rotation (night pitch 0.02 was already only 0.52 %, so this is a check, not a
-  fix).
+### Still open
 
-### P5 — Gate (½ session)
-`tools/flicker.sh` into `check.sh --slow` with the measured thresholds:
-pan/pitch < 0.5 %, water 0.0 %, and the rising-camera case < 2 %. Record the
-numbers in this table above so the next regression is a diff, not an argument.
+- Shadows are still per-vertex from the baked horizon, so distant slopes band.
+  A chunk-local shadow texture is the upgrade path, and it wants the same
+  single-sample pass this work introduced.
+- Tree and rock silhouettes have no alpha; their edges are the remaining hard
+  cases for any sampling scheme.
+- `replays/streaming.txt` still catches pop, but nothing measures *tier swap*
+  brightness directly: the rendered frames with and without `NOLOD=1` came out
+  byte-identical, which is the acceptance criterion satisfied by accident of
+  how the shading is sampled rather than by design.
 
 ## Rules that must not be broken by accident
 

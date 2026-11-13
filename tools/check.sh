@@ -19,6 +19,9 @@ quick=0 slow=0
 if [ $slow -eq 1 ]; then
     tools/analyze.sh --strict
     tools/sweep.sh 1 40
+    # rendering: sub-pixel stability is the flicker the player reports, and it
+    # regresses silently -- a wrong blend weight looks fine in a still
+    tools/flicker.sh 1 12 40
     # the sim is data: it is reviewed by reading it, so determinism is the only
     # thing worth asserting mechanically -- a second run of the same seed must
     # produce the same world, or "come back to a changed place" is not buildable

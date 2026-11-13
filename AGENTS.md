@@ -243,3 +243,23 @@ were deleted, not disabled.
 
 See `libs/VENDORED.md`. sokol and sokol-shdc are pinned together; bumping one
 alone can silently produce a header that does not match the headers.
+
+## Rendering rules that are easy to break (hardening pass)
+
+- **One command queue.** `headless_readback` blits on `sg_mtl_command_queue()`.
+  A second `newCommandQueue` has no ordering against sokol's, and shots then
+  silently return the previous frame — including in the middle of an A/B test.
+- **No MSAA.** The TAA pass samples the scene, and a multisampled depth buffer
+  cannot be sampled. The scene pass is single-sample; the depth-free
+  reprojection uses an R32F `frag_lin` output (`v_depth`, the view-axis
+  distance). Anti-aliasing is temporal (`taa_pass`) plus `--ssaa` for stills.
+- **Pipeline pixel formats are explicit** for the offscreen scene targets
+  (RGBA8 colour, R32F linear depth). A default format follows the *window's*
+  swapchain (BGRA8) and is then rejected against our own attachment. The
+  present pipeline is the reverse: it must match the swapchain.
+- **Determinism.** `capture()` settles 80 frames after `world_ready()`, and
+  `settle()` in the probe zeroes `taa_n`/`prev_vp_valid` first. Without that,
+  the golden images depend on how many frames the chunk streamer happened to
+  need, which is not reproducible.
+- **`tools/flicker.sh 1 12 40`** is the gate. Its pixel counts are
+  contrast-weighted: sharper scores worse. Treat it as a regression alarm.

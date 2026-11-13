@@ -118,6 +118,10 @@ in vec4 v_sh1;
 in vec3 v_bounce;
 in float v_water;
 out vec4 frag;
+// linear view depth, for the temporal pass to know where this pixel was on
+// screen last frame. Writing it here is cheaper and more robust than sampling
+// a depth buffer: depth32float is not filterable and cannot be resolved.
+layout(location=1) out vec4 frag_lin;
 
 vec3 sky_col(float y){
     return mix(u_horizon.rgb, u_zenith.rgb, pow(clamp(y, 0.0, 1.0), 0.85));
@@ -160,7 +164,13 @@ void main(){
     // 500-2600 was not tight enough: in the fade band the amplitude is still
     // enough to alias, and the band covers most of the visible sea. Waves now
     // exist only where a pixel is smaller than a wavelength.
-    float wfade = 1.0 - smoothstep(60.0, 400.0, v_depth);
+    // The fade boundary itself used to be a circle in depth, so flying forward
+    // swept a visible ripple ring across otherwise smooth water. Pushing the
+    // boundary around with a world-space hash makes it ragged and the sweep
+    // invisible: the same amplitude change, smeared over ~200 units.
+    float wf_dist = v_depth + 110.0 * (hash1(vec3(floor(v_wpos.xz * 0.004), 11.0)) - 0.5)
+                              + 70.0  * (hash1(vec3(floor(v_wpos.xz * 0.021), 5.0)) - 0.5);
+    float wfade = 1.0 - smoothstep(60.0, 400.0, wf_dist);
     if (v_water > 0.5 && length(v_flow) > 0.5) {
         float f = dot(v_wpos.xz, v_flow) * 0.10 - u_sky.z * 1.3;
         float lake = step(1.5, length(v_flow));
@@ -211,6 +221,7 @@ void main(){
     haze += u_sun_col.rgb * pow(max(dot(ray, u_sun.xyz), 0.0), 8.0) * 0.30 * (1.0 - u_sky.y);
     vec3 o = mix(c, haze, fog) + dither(gl_FragCoord.xy);
     frag = vec4(clamp(o, 0.0, 1.0), 1.0);
+    frag_lin = vec4(v_depth, 0.0, 0.0, 0.0);
 }
 @end
 
@@ -247,6 +258,7 @@ layout(binding=0) uniform sky_params {
 
 in vec2 v_uv;
 out vec4 frag;
+layout(location=1) out vec4 frag_lin;   /* no geometry: depth 0 means "sky" */
 
 vec3 sky_col(float y){
     return mix(u_horizon.rgb, u_zenith.rgb, pow(clamp(y, 0.0, 1.0), 0.85));
@@ -288,8 +300,93 @@ void main(){
             c = vec3(0.96, 0.93, 0.86);
     }
     frag = vec4(clamp(c + dither(gl_FragCoord.xy), 0.0, 1.0), 1.0);
+    frag_lin = vec4(0.0, 0.0, 0.0, 0.0);
 }
 @end
+
+
+// --- post ---------------------------------------------------------------
+// A fullscreen triangle: three vertices, no buffer, no index. v_uv is the
+// texture coordinate of the pixel, flipped because NDC y+1 is texture row 0.
+@vs quad_vs
+out vec2 v_uv;
+void main() {
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    v_uv = vec2(p.x, 1.0 - p.y);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@end
+
+// Temporal accumulation. Every frame is rendered with the projection shifted by
+// a different sub-pixel offset (a Halton sequence), so eight consecutive frames
+// sample eight different positions inside the same pixel. Reprojection finds
+// where this pixel's world point was on screen last frame, and the history is
+// clamped to the 3x3 range of the current frame -- without that clamp a moving
+// silhouette drags its old pixels along (ghosting), which is worse than the
+// flicker it fixes.
+@fs taa_fs
+in vec2 v_uv;
+out vec4 frag_color;
+layout(binding=0) uniform texture2D cur_tex;
+layout(binding=1) uniform texture2D hist_tex;
+layout(binding=2) uniform texture2D depth_tex;
+layout(binding=0) uniform sampler smp;
+layout(binding=2) uniform sampler smpn;   /* depth32float is not filterable */
+layout(binding=0) uniform taa_params {
+    vec4 cf;    // forward, 0
+    vec4 cr;    // right * tan(hfov/2), 1/fb_w
+    vec4 cu;    // up * tan(vfov/2), 1/fb_h
+    vec4 eye;   // eye, history weight
+    mat4 prev_vp;
+    vec4 pz;    // reversed-Z: x = n/(f-n), y = n*f/(f-n), zw = this frame's jitter in NDC
+};
+void main() {
+    vec3 cur = texture(sampler2D(cur_tex, smp), v_uv).rgb;
+    float d = texture(sampler2D(depth_tex, smpn), v_uv).r;
+    vec3 outc = cur;
+    if (d > 0.0 && eye.w > 0.0) {
+        // the scene pass wrote the view-axis distance, not a depth value: no
+        // decode, and no precision lost to an 8-bit channel
+        float dist = d;
+        // the sample this pixel actually took, jitter included
+        vec2 ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0) - pz.zw;
+        // the ray's forward component is exactly 1, so scaling by `dist`
+        // (the view-axis distance) lands on the right point without a divide
+        vec3 ray = cf.xyz + cr.xyz * ndc.x + cu.xyz * ndc.y;
+        vec4 pc = prev_vp * vec4(eye.xyz + ray * dist, 1.0);
+        if (pc.w > 0.0) {
+            vec2 puv = vec2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+            if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {
+                vec3 lo = cur, hi = cur;
+                for (int y = -1; y <= 1; y++)
+                for (int x = -1; x <= 1; x++) {
+                    vec3 s = texture(sampler2D(cur_tex, smp), v_uv + vec2(float(x) * cr.w, float(y) * cu.w)).rgb;
+                    lo = min(lo, s);
+                    hi = max(hi, s);
+                }
+                vec3 h = clamp(texture(sampler2D(hist_tex, smp), puv).rgb, lo, hi);
+                outc = mix(cur, h, eye.w);
+            }
+        }
+    }
+    frag_color = vec4(outc, 1.0);
+}
+@end
+
+// Copy the accumulated frame to the window. The readback path does not use
+// this: it blits the same texture to a buffer instead.
+@fs present_fs
+in vec2 v_uv;
+out vec4 frag_color;
+layout(binding=0) uniform texture2D src_tex;
+layout(binding=0) uniform sampler smp;
+void main() {
+    frag_color = vec4(texture(sampler2D(src_tex, smp), v_uv).rgb, 1.0);
+}
+@end
+
+@program quad quad_vs taa_fs
+@program present quad_vs present_fs
 
 @program terrain terrain_vs terrain_fs
 @program sky sky_vs sky_fs

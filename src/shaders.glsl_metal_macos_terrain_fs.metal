@@ -66,6 +66,7 @@ struct fs_params
 struct main0_out
 {
     float4 frag [[color(0)]];
+    float4 frag_lin [[color(1)]];
 };
 
 struct main0_in
@@ -123,38 +124,41 @@ fragment main0_out main0(main0_in in [[stage_in]], constant fs_params& _27 [[buf
     int _162 = int(floor(_157)) & 7;
     float _176 = mix(hs[_162], hs[(_162 + 1) & 7], fract(_157));
     float3 c = ((in.v_col * (mix(_27.u_gnd_amb.xyz, _27.u_sky_amb.xyz, float3(fast::clamp((_76.y * 0.5) + 0.5, 0.0, 1.0))) + (((_27.u_sun_col.xyz * ((fast::max(_85, 0.0) * 0.64999997615814208984375) + 0.3499999940395355224609375)) * 1.0499999523162841796875) * smoothstep(_176 - 0.02999999932944774627685546875, _176 + 0.02999999932944774627685546875, _27.u_sun.w)))) + ((in.v_col * _27.u_fill.xyz) * fast::max(0.0, -_85))) + ((in.v_bounce * _27.u_sun_col.xyz) * 0.300000011920928955078125);
-    float _244 = 1.0 - smoothstep(60.0, 400.0, in.v_depth);
-    bool _247 = in.v_water > 0.5;
-    bool _255;
-    if (_247)
+    float3 param = float3(floor(in.v_wpos.xz * 0.0040000001899898052215576171875), 11.0);
+    float3 param_1 = float3(floor(in.v_wpos.xz * 0.02099999971687793731689453125), 5.0);
+    float _277 = 1.0 - smoothstep(60.0, 400.0, (in.v_depth + (110.0 * (hash1(param) - 0.5))) + (70.0 * (hash1(param_1) - 0.5)));
+    bool _280 = in.v_water > 0.5;
+    bool _288;
+    if (_280)
     {
-        _255 = length(in.v_flow) > 0.5;
+        _288 = length(in.v_flow) > 0.5;
     }
     else
     {
-        _255 = _247;
+        _288 = _280;
     }
-    if (_255)
+    if (_288)
     {
-        c += (((float3(0.100000001490116119384765625, 0.12999999523162841796875, 0.12999999523162841796875) * (0.5 + (0.5 * sin((dot(in.v_wpos.xz, in.v_flow) * 0.100000001490116119384765625) - (_27.u_sky.z * 1.2999999523162841796875))))) * (1.0 - step(1.5, length(in.v_flow)))) * _244);
-        float3 param = floor(float3(in.v_wpos.xz * 3.5, floor(_27.u_sky.z * 2.0)));
-        c += ((float3(0.2199999988079071044921875) * step(0.9965000152587890625, hash1(param))) * (1.0 - smoothstep(220.0, 700.0, in.v_depth)));
+        c += (((float3(0.100000001490116119384765625, 0.12999999523162841796875, 0.12999999523162841796875) * (0.5 + (0.5 * sin((dot(in.v_wpos.xz, in.v_flow) * 0.100000001490116119384765625) - (_27.u_sky.z * 1.2999999523162841796875))))) * (1.0 - step(1.5, length(in.v_flow)))) * _277);
+        float3 param_2 = floor(float3(in.v_wpos.xz * 3.5, floor(_27.u_sky.z * 2.0)));
+        c += ((float3(0.2199999988079071044921875) * step(0.9965000152587890625, hash1(param_2))) * (1.0 - smoothstep(220.0, 700.0, in.v_depth)));
     }
-    if (_247)
+    if (_280)
     {
-        float3 _331 = fast::normalize(in.v_wpos - _27.u_cam_pos.xyz);
-        float3 _413 = fast::normalize(float3((0.02999999932944774627685546875 * sin((in.v_wpos.x * 0.0041999998502433300018310546875) + (_27.u_sky.z * 0.20999999344348907470703125))) + (((0.0500000007450580596923828125 * sin((in.v_wpos.x * 0.310000002384185791015625) + (_27.u_sky.z * 1.7000000476837158203125))) + (0.0320000015199184417724609375 * sin((in.v_wpos.z * 0.569999992847442626953125) - (_27.u_sky.z * 2.2999999523162841796875)))) * _244), 1.0, (0.02999999932944774627685546875 * sin((in.v_wpos.z * 0.0035999999381601810455322265625) - (_27.u_sky.z * 0.17000000178813934326171875))) + (((0.0500000007450580596923828125 * sin((in.v_wpos.z * 0.2899999916553497314453125) - (_27.u_sky.z * 1.5))) + (0.0320000015199184417724609375 * sin((in.v_wpos.x * 0.62999999523162841796875) + (_27.u_sky.z * 1.89999997615814208984375)))) * _244)));
-        float _426 = 0.5 * powr(1.0 - fast::max(dot(_413, -_331), 0.0), 5.0);
-        float3 _431 = reflect(_331, _413);
-        float param_1 = sqrt(fast::max(_431.y, 0.0));
-        c = ((c * (0.980000019073486328125 - _426)) + ((sky_col(param_1, _27) * (0.0199999995529651641845703125 + _426)) * 0.89999997615814208984375)) + ((_27.u_sun_col.xyz * (powr(fast::max(dot(_431, _27.u_sun.xyz), 0.0), 90.0) * (1.0 - _27.u_sky.y))) * 0.89999997615814208984375);
+        float3 _363 = fast::normalize(in.v_wpos - _27.u_cam_pos.xyz);
+        float3 _445 = fast::normalize(float3((0.02999999932944774627685546875 * sin((in.v_wpos.x * 0.0041999998502433300018310546875) + (_27.u_sky.z * 0.20999999344348907470703125))) + (((0.0500000007450580596923828125 * sin((in.v_wpos.x * 0.310000002384185791015625) + (_27.u_sky.z * 1.7000000476837158203125))) + (0.0320000015199184417724609375 * sin((in.v_wpos.z * 0.569999992847442626953125) - (_27.u_sky.z * 2.2999999523162841796875)))) * _277), 1.0, (0.02999999932944774627685546875 * sin((in.v_wpos.z * 0.0035999999381601810455322265625) - (_27.u_sky.z * 0.17000000178813934326171875))) + (((0.0500000007450580596923828125 * sin((in.v_wpos.z * 0.2899999916553497314453125) - (_27.u_sky.z * 1.5))) + (0.0320000015199184417724609375 * sin((in.v_wpos.x * 0.62999999523162841796875) + (_27.u_sky.z * 1.89999997615814208984375)))) * _277)));
+        float _457 = 0.5 * powr(1.0 - fast::max(dot(_445, -_363), 0.0), 5.0);
+        float3 _462 = reflect(_363, _445);
+        float param_3 = sqrt(fast::max(_462.y, 0.0));
+        c = ((c * (0.980000019073486328125 - _457)) + ((sky_col(param_3, _27) * (0.0199999995529651641845703125 + _457)) * 0.89999997615814208984375)) + ((_27.u_sun_col.xyz * (powr(fast::max(dot(_462, _27.u_sun.xyz), 0.0), 90.0) * (1.0 - _27.u_sky.y))) * 0.89999997615814208984375);
     }
-    float3 _474 = fast::clamp(c * 1.14999997615814208984375, float3(0.0), float3(1.0));
-    c = mix(_474, (_474 * _474) * (float3(3.0) - (_474 * 2.0)), float3(0.550000011920928955078125));
-    float3 _536 = fast::normalize((_27.u_cam_fwd.xyz + (_27.u_cam_right.xyz * ((((in.v_suv.x * 2.0) - 1.0) * _27.u_cam_fwd.w) * _27.u_cam_right.w))) + (_27.u_cam_up.xyz * (((in.v_suv.y * 2.0) - 1.0) * _27.u_cam_fwd.w)));
-    float param_2 = sqrt(fast::max(_536.y, 0.0));
-    float2 param_3 = gl_FragCoord.xy;
-    out.frag = float4(fast::clamp(mix(c, sky_col(param_2, _27) + (((_27.u_sun_col.xyz * powr(fast::max(dot(_536, _27.u_sun.xyz), 0.0), 8.0)) * 0.300000011920928955078125) * (1.0 - _27.u_sky.y)), float3(fast::clamp((in.v_depth - _27.u_fog.x) / (_27.u_fog.y - _27.u_fog.x), 0.0, 1.0))) + float3(dither(param_3)), float3(0.0), float3(1.0)), 1.0);
+    float3 _505 = fast::clamp(c * 1.14999997615814208984375, float3(0.0), float3(1.0));
+    c = mix(_505, (_505 * _505) * (float3(3.0) - (_505 * 2.0)), float3(0.550000011920928955078125));
+    float3 _567 = fast::normalize((_27.u_cam_fwd.xyz + (_27.u_cam_right.xyz * ((((in.v_suv.x * 2.0) - 1.0) * _27.u_cam_fwd.w) * _27.u_cam_right.w))) + (_27.u_cam_up.xyz * (((in.v_suv.y * 2.0) - 1.0) * _27.u_cam_fwd.w)));
+    float param_4 = sqrt(fast::max(_567.y, 0.0));
+    float2 param_5 = gl_FragCoord.xy;
+    out.frag = float4(fast::clamp(mix(c, sky_col(param_4, _27) + (((_27.u_sun_col.xyz * powr(fast::max(dot(_567, _27.u_sun.xyz), 0.0), 8.0)) * 0.300000011920928955078125) * (1.0 - _27.u_sky.y)), float3(fast::clamp((in.v_depth - _27.u_fog.x) / (_27.u_fog.y - _27.u_fog.x), 0.0, 1.0))) + float3(dither(param_5)), float3(0.0), float3(1.0)), 1.0);
+    out.frag_lin = float4(in.v_depth, 0.0, 0.0, 0.0);
     return out;
 }
 
