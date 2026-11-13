@@ -300,7 +300,7 @@ void init(void) {
         .layout.attrs[ATTR_terrain_b4  ].format = SG_VERTEXFORMAT_UBYTE4N,
         .layout.attrs[ATTR_terrain_b5  ].format = SG_VERTEXFORMAT_UBYTE4N,
         /* depth unset defaults to ALWAYS/no-write, which paints over itself */
-        .depth.compare = SG_COMPAREFUNC_LESS_EQUAL,
+        .depth.compare = SG_COMPAREFUNC_GREATER_EQUAL,   /* reversed-Z */
         .depth.write_enabled = true,
     });
     bindings.vertex_buffers[0] = vbuf;
@@ -313,7 +313,8 @@ void init(void) {
         .depth.compare = SG_COMPAREFUNC_ALWAYS,
         .depth.write_enabled = false,
     });
-    pass_action = (sg_pass_action){ .colors[0] = { .load_action = SG_LOADACTION_CLEAR, .clear_value = {SKY_R, SKY_G, SKY_B, 1.0f} } };
+    pass_action = (sg_pass_action){ .colors[0] = { .load_action = SG_LOADACTION_CLEAR, .clear_value = {SKY_R, SKY_G, SKY_B, 1.0f} },
+                                     .depth = { .load_action = SG_LOADACTION_CLEAR, .clear_value = 0.0f } };
     /* mouse lock waits for focus: locking while the window is in the
        background would hijack the pointer the user is still using */
 }

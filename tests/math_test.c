@@ -8,12 +8,18 @@
 static void test_perspective_maps_near_far(void) {
     float p[16];
     mat4_perspective(p, 1.0f, 16.0f/9.0f, 0.1f, 100.0f);
-    /* a point on the view axis at z=-near lands on the near plane */
+    /* reversed-Z: near maps to 1, far to 0, and the order is monotonic in
+       between (which is the property the depth test depends on) */
     float x, y, z;
     mat4_point(p, 0, 0, -0.1f, &x, &y, &z);
-    assert(NEAR(z, -1.0f));
-    mat4_point(p, 0, 0, -100.0f, &x, &y, &z);
     assert(NEAR(z, 1.0f));
+    mat4_point(p, 0, 0, -100.0f, &x, &y, &z);
+    assert(NEAR(z, 0.0f));
+    float znear_z, zmid_z, zfar_z;
+    mat4_point(p, 0, 0, -0.1f, &x, &y, &znear_z);
+    mat4_point(p, 0, 0, -1.0f, &x, &y, &zmid_z);
+    mat4_point(p, 0, 0, -100.0f, &x, &y, &zfar_z);
+    assert(znear_z > zmid_z && zmid_z > zfar_z);
     /* a point one unit off-axis at distance 1 maps to NDC x = f/aspect */
     mat4_point(p, 0.1f, 0, -0.1f, &x, &y, &z);
     assert(NEAR(x, (1.0f/tanf(0.5f)) / (16.0f/9.0f)));

@@ -171,6 +171,18 @@ Rules for the analysis step:
   must change, re-record it with `tools/goldens.sh` and say why in the commit.
 - If a tool is broken rather than finding something, fix the tool.
 
+## Rendering rules that are easy to break
+
+- **Reversed-Z is three things.** `mat4_perspective` emits near→1 / far→0,
+  the pipelines use `SG_COMPAREFUNC_GREATER_EQUAL`, and the pass clears depth
+  to **0.0**. Change one without the others and the scene either disappears or
+  fights. Why: with a normal projection at ~2 km in a 25 km view, a 32-bit
+  float depth has ~30 cm of resolution, so the sea plane and the seabed landed
+  on the same value and every coastline shimmered while the camera moved.
+- Anything with its own fade must fade by **distance in world units**
+  (`v_depth`), not by a screen-space trick: the sea is two triangles, so there
+  is no mip chain to filter a wave.
+
 ## Long-term architecture rules
 
 `PLAN.md` is the design. Three rules from it apply to every change:

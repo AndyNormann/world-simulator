@@ -16,14 +16,22 @@ static inline void mat4_mul(float *r, const float *a, const float *b) {
     }
 }
 
+/* Reversed-Z, [0,1] clip depth (Metal's range, which is also what d3d wants):
+   near maps to 1 and far to 0. Why: with a normal projection the depth values
+   are clustered against the far plane, and a 32-bit float has ~7 digits, so by
+   ~2 km in a 25 km view two surfaces 30 cm apart land on the same depth value
+   -- the water plane and the seabed then fight every frame and the coastline
+   shimmers as the camera moves. Reversing puts the precision where the eye is.
+   Three things travel together and must stay in step: this mapping, a
+   GREATER_EQUAL depth test, and a depth clear of 0.0 (see render.c). */
 static inline void mat4_perspective(float *m, float fov_y, float aspect, float z_near, float z_far) {
     float f = 1.0f / tanf(fov_y * 0.5f);
     for (int i = 0; i < 16; i++) m[i] = 0.0f;
     m[0] = f / aspect;
     m[5] = f;
-    m[10] = (z_far + z_near) / (z_near - z_far);
+    m[10] = z_near / (z_far - z_near);
     m[11] = -1.0f;
-    m[14] = (2.0f * z_far * z_near) / (z_near - z_far);
+    m[14] = (z_near * z_far) / (z_far - z_near);
 }
 
 static inline void mat4_lookat(float *m, float ex, float ey, float ez,
