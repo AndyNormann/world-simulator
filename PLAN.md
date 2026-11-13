@@ -249,19 +249,37 @@ wrong thing: see below.
 
 The first version reset the accumulator whenever the camera moved (`taa_n = 0`
 on any change), which meant the blend weight was **zero on every frame while
-walking** — TAA averaged nothing exactly when the player is moving, and only
-worked while standing still, which is where nobody looks for flicker. It was
-invisible in the converged-still metric for the same reason.
+walking** — TAA averaged nothing exactly when the player is moving. Now the
+history survives motion: reprojection carries it, a 3x3 clamp bounds it, and
+only a *teleport* (>50 units in one frame) or the loading transition clears it.
 
-Now the history survives motion: reprojection carries it, a 3x3 clamp bounds
-it, and only a *teleport* (a jump no walk could make, >50 units in a frame) or
-the loading→loaded transition invalidates it.
-
-The second half of the fix was the sign of the jitter in the reconstruction
-ray: the projection is jittered by `proj[8] -= jx`, so a pixel's sample ray is
+The second half was the sign of the jitter in the reconstruction ray: the
+projection is jittered with `proj[8] -= jx`, so a pixel's sample ray is
 `p + j`, not `p - j`. With the wrong sign the history landed up to a pixel away
-from where it belonged, which is harmless at ground level and obvious from
-height, where every pixel covers hundreds of units of world.
+from where it belonged — harmless on the ground, obvious at altitude.
+
+### The flash when walking forward
+
+`world_ready()` goes false while *any* chunk is rebuilding, and the renderer
+treated that as "still loading": terrain not drawn, sky dimmed to 28 %, progress
+bar drawn. Walking forward changes the horizontal distance the streamer keys on,
+so tier boundaries are crossed and chunks rebuild constantly → the entire frame
+flashed, several times a second. Going up does not change horizontal distance,
+which is exactly why that motion was clean.
+
+Two fixes:
+
+- **Latch the loading state.** The overlay is for the first load only; after
+  that, streaming is invisible by definition.
+- **Keep the old mesh while the new one builds.** A tier change used to destroy
+  the buffer and zero the word count on the spot, punching a hole in the terrain
+  for however many frames the rebuild took. The buffer now lives until its
+  replacement is uploaded, and the draw loop accepts READY *or* BUILDING
+  (DONE is the one state where the published word count and the live buffer
+  disagree, so it is skipped).
+
+Measured by `--flicker`'s `rebuild` column, which forces every chunk to rebuild:
+100 % of pixels changed before, 3–5 % after.
 
 ### Still open
 

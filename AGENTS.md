@@ -269,6 +269,11 @@ alone can silently produce a header that does not match the headers.
   so the reconstruction ray for a pixel is `ndc + jitter`, not `- jitter`. Get it
   wrong and the history lands a pixel off — invisible on the ground, obvious at
   altitude.
+- **Streaming must not be visible.** `world_ready()` goes false during any
+  rebuild, so the loading overlay has to be *latched* after the first load, the
+  old chunk buffer has to survive until the new one is uploaded, and the draw
+  loop must accept READY and BUILDING (not DONE). `--flicker`'s `rebuild`
+  column forces a rebuild of every chunk and reports the worst frame.
 - **`tools/flicker.sh 1 12 40`** is the gate, and it checks a *high* camera as
   well as the ground. Pixel counts are contrast-weighted: sharper scores worse.
   Treat it as a regression alarm.

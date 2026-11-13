@@ -564,6 +564,12 @@ void render(int w, int h) {
         if (chunk_state(&chunks[i]) != CHUNK_DONE) continue;
         /* an empty chunk gets no buffer: sokol asserts on a zero-size one */
         if (chunks[i].words > 0) {
+            /* the previous tier's buffer is still live: destroy it only now,
+               when its replacement exists */
+            if (chunks[i].buf.id != SG_INVALID_ID) {
+                sg_destroy_buffer(chunks[i].buf);
+                chunks[i].buf.id = SG_INVALID_ID;
+            }
             chunks[i].buf = sg_make_buffer(&(sg_buffer_desc){
                 .data = { .ptr = chunks[i].data, .size = (size_t)chunks[i].words * sizeof(float) } });
             if (chunks[i].buf.id == SG_INVALID_ID) {
@@ -611,7 +617,15 @@ void render(int w, int h) {
         fprintf(stderr, "fly f%d cam %.0f,%.0f  ready=%d empty=%d t1=%d t2=%d t4=%d queued=%d rebuilds=%d\n",
                 frame_count, cam_x, cam_z, rdy, emp, t1, t2, t4, jobs_pending(), stream_rebuilds);
     }
+    /* Latch: streaming rebuilds make world_ready() false again and again mid-
+       walk, and the loading overlay (dimmed frame + progress bar) must be for
+       the first load only. Un-latched, every tier rebuild flashed the whole
+       screen dark -- the flicker that only appeared when moving forward,
+       because that is the motion that crosses band boundaries. */
+    static int loaded_once = 0;
     int loaded = world_ready();
+    if (loaded) loaded_once = 1;
+    if (loaded_once) loaded = 1;
     if (loaded && build_async_ms == 0.0 && builder_started)
         build_async_ms = stm_sec(stm_now() - builder_t0) * 1000.0;
     pal[14*4+0] = NCHUNKS ? (float)nchunks_ready() / (float)NCHUNKS : 1.0f;
@@ -656,7 +670,14 @@ void render(int w, int h) {
         float tanh_h = tanv * (float)rw / (float)rh;
         chunks_drawn = 0;
         for (int i = 0; i < NCHUNKS; i++) {
-            if (chunk_state(&chunks[i]) != CHUNK_READY || chunks[i].words == 0) continue;
+            /* READY: current mesh. BUILDING: the previous tier's mesh, still in
+               its old buffer, because words and buffer are only ever replaced
+               together. DONE is the one state where they disagree (the worker
+               has published a new count, the render thread has not uploaded it
+               yet), so it must not be drawn. */
+            int st = chunk_state(&chunks[i]);
+            if ((st != CHUNK_READY && st != CHUNK_BUILDING) || chunks[i].words == 0
+                || chunks[i].buf.id == SG_INVALID_ID) continue;
             float ccx = ((float)chunks[i].cx + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
             float ccz = ((float)chunks[i].cz + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
             float ccy = 0.5f * (float)chunks[i].cy_top;
@@ -824,12 +845,18 @@ void flicker_probe(void) {
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
     settle(48);
     memcpy(base, cap_buf, bytes);
-    float walk = 0.0f;
+    float walk = 0.0f, walk_max = 0.0f, walk_up = 0.0f;
     const char *dump = getenv("FLICKER_DUMP");
     for (int i = 0; i < 30; i++) {
         cam_x += sinf(yaw) * 0.6f;
         cam_z += cosf(yaw) * 0.6f;
         grab();
+        {
+            /* a pop is one frame that jumps while its neighbours do not, so the
+               maximum matters more than the mean */
+            float d1 = flicker_pct(base, cap_buf, 0);
+            if (d1 > walk_max) walk_max = d1;
+        }
         if (dump) {
             char p[512];
             snprintf(p, sizeof p, "%s/walk-%02d.png", dump, i);
@@ -840,7 +867,58 @@ void flicker_probe(void) {
         memcpy(base, cap_buf, bytes);
     }
     walk /= 30.0f;
-    cam_x = cx0; cam_z = cz0;      /* the walk moved the camera: put it back, or
+
+    /* The same step straight up: forward motion expands the image radially and
+       leans on reprojection depth, vertical motion barely does. Comparing the
+       two is how a reprojection fault is told apart from plain aliasing. */
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    for (int i = 0; i < 30; i++) {
+        cam_y += 0.6f;
+        grab();
+        walk_up += flicker_pct(base, cap_buf, 0);
+        memcpy(base, cap_buf, bytes);
+    }
+    walk_up /= 30.0f;
+
+    /* And the real thing: hold W through sim_step, exactly as the player does,
+       which walks at 12 units/s and rides the ground. A camera that follows the
+       terrain changes its height every frame, so this is not the same motion as
+       "forward at a fixed height" and is the only version that can show what a
+       player sees. */
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    float walk_player = 0.0f;
+    keys[SAPP_KEYCODE_W] = 1;
+    for (int i = 0; i < 60; i++) {
+        sim_step(1.0f / 60.0f);
+        grab();
+        walk_player += flicker_pct(base, cap_buf, 0);
+        memcpy(base, cap_buf, bytes);
+    }
+    keys[SAPP_KEYCODE_W] = 0;
+    walk_player /= 60.0f;
+
+    /* Streaming: rebuild every chunk and watch for a flash. Walking forward is
+       the motion that triggers tier rebuilds -- going up does not change the
+       horizontal distance the streamer keys on -- which is why this, and not
+       the walk, is the number that says whether streaming is visible. */
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    float rebuild_max = 0.0f;
+    force_rebuild_all();
+    for (int i = 0; i < 40; i++) {
+        grab();
+        if (i < 3) fprintf(stderr, "rebuild dbg i=%d ready=%d uploads_pending=%d\n", i, world_ready(), jobs_pending());
+        float d1 = flicker_pct(base, cap_buf, 0);
+        if (d1 > rebuild_max) rebuild_max = d1;
+        memcpy(base, cap_buf, bytes);
+    }
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;      /* the walk moved the camera: put it back, or
                                       every measurement after this one is taken
                                       from somewhere else */
 
@@ -850,8 +928,8 @@ void flicker_probe(void) {
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
     settle(48);
     memcpy(base, cap_buf, bytes);
-    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% top=%.2f%%\n",
-           terrain_seed, gfx_w, gfx_h, gfx_ssaa, res[0], res[1], res[2], res[3], walk,
+    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% top=%.2f%%\n",
+           terrain_seed, gfx_w, gfx_h, gfx_ssaa, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
            flicker_pct(base, alt, 1));
     fflush(stdout);
     free(base); free(alt);

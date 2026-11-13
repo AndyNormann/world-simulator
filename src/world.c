@@ -2319,6 +2319,17 @@ int nchunks_ready(void) {
 
 /* Everything queued has to be at its tier before a capture, or --shot could
    photograph a half-streamed world. */
+/* Test hook: rebuild every chunk at its current tier. A rebuild must be
+   invisible -- the old mesh keeps drawing until the new one is uploaded, and the
+   loading overlay must not come back -- so this is how that is measured. */
+void force_rebuild_all(void) {
+    for (int i = 0; i < NCHUNKS; i++) {
+        if (chunk_state(&chunks[i]) != CHUNK_READY || chunks[i].tier == 0) continue;
+        chunk_set_state(&chunks[i], CHUNK_BUILDING);
+        job_push(i, chunks[i].tier);
+    }
+}
+
 int world_ready(void) {
     if (jobs_pending()) return 0;
     for (int i = 0; i < NCHUNKS; i++)
@@ -2357,12 +2368,21 @@ void chunks_update(void) {
             float edge = (d < 0.5f * (TIER_1_MAX + TIER_2_MAX)) ? TIER_1_MAX : TIER_2_MAX;
             if (fabsf(d - edge) < hyst) continue;
         }
-        if (chunks[i].buf.id != SG_INVALID_ID) {
-            sg_destroy_buffer(chunks[i].buf);
-            chunks[i].buf.id = SG_INVALID_ID;
+        if (want == 0) {
+            /* evicted: nothing will replace it, so the buffer goes now */
+            if (chunks[i].buf.id != SG_INVALID_ID) {
+                sg_destroy_buffer(chunks[i].buf);
+                chunks[i].buf.id = SG_INVALID_ID;
+            }
+            chunks[i].words = 0;
+            chunk_set_state(&chunks[i], CHUNK_EMPTY);
+            chunks[i].tier = 0;
+            continue;
         }
-        chunks[i].words = 0;
-        if (want == 0) { chunk_set_state(&chunks[i], CHUNK_EMPTY); chunks[i].tier = 0; continue; }
+        /* A tier change keeps the old buffer and keeps drawing it until the
+           new mesh has been uploaded. Destroying it here punched a hole in the
+           terrain for however many frames the rebuild took -- at walking speed
+           that is a visible flash at every band the camera crosses. */
         stream_rebuilds++;
         chunks[i].tier = want;
         chunk_set_state(&chunks[i], CHUNK_BUILDING);

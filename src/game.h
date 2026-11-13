@@ -432,6 +432,7 @@ void shrink_to(unsigned char *dst, int dw, int dh, const unsigned char *src, int
 char *with_suffix(const char *path, const char *suffix);
 void capture(const char *path);
 void flicker_probe(void);
+void force_rebuild_all(void);
 void replay_die(const char *fmt, ...);
 void advance(float seconds);
 void key_by_name(const char *name, int down);

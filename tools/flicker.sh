@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Sub-pixel and in-motion stability, per seed, on the ground and high up.
+# Sub-pixel, in-motion and streaming stability, per seed, on the ground and high
+# up. `rebuild` forces every chunk to rebuild and reports the worst frame-to-
+# frame change: it must be near zero, because a rebuild is allowed to be slow
+# and is not allowed to be visible.
 #
 #   tools/flicker.sh 1 12 40
 #
@@ -24,8 +27,10 @@ for s in "$@"; do
         echo "$name $line"
         static=$(echo "$line" | sed -n 's/.*static=\([0-9.]*\)%.*/\1/p')
         walk=$(echo "$line"   | sed -n 's/.* walk=\([0-9.]*\)%.*/\1/p')
-        awk -v a="$static" -v b="$walk" 'BEGIN{ if (a > 0.5 || b > 4.5) exit 1 }' || {
-            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk%)"
+        rebuild=$(echo "$line" | sed -n 's/.* rebuild=\([0-9.]*\)%.*/\1/p')
+        awk -v a="$static" -v b="$walk" -v c="$rebuild" \
+            'BEGIN{ if (a > 0.5 || b > 4.5 || c > 8.0) exit 1 }' || {
+            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild%)"
             fail=1
         }
     done
