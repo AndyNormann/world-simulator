@@ -48,6 +48,7 @@ extern float world_sea;
 #define TERRAIN_WARP_AMOUNT 70.0f
 /* ridges are sampled at a higher frequency than fbm; the resolution check has
    to account for it or the assert passes while the crests alias */
+#define T_QUAD(x) ((x) * (x))
 #define TERRAIN_RIDGE_SCALE 0.65f
 
 /* Highest frequency present in any of the height terms. */
@@ -214,11 +215,19 @@ static inline float terrain_chain(float x, float z, unsigned seed, int k, float 
     float v = -x * sa + z * ca;                    /* across it */
 
     float spine = 620.0f * terrain_fbm(u * 0.9f, 0.5f + (float)k * 9.0f, seed + 71u + (unsigned)k);
-    float width = 1000.0f * (0.70f + 0.44f * terrain_fbm(u * 0.55f, 3.5f, seed + 97u + (unsigned)k));
+    float width = 1450.0f * (0.70f + 0.44f * terrain_fbm(u * 0.55f, 3.5f, seed + 97u + (unsigned)k));
     float d = fabsf(v - spine) / width;
     if (d >= 1.0f) return 0.0f;
+    /* Linear across, not quadratic. (1-d)^2 is a cone in cross-section: a
+       1900-unit range over a 1000-unit half-width with a parabolic profile is
+       a 63-degree cone, which is why an island with one chain through it
+       rendered as a single summit. A real range has straight flanks and a flat
+       crest, so the profile is a trapezoid: linear flanks, a plateau on top.
+       Squaring only the outer third keeps the toe curved instead of a crease. */
     float t = 1.0f - d;
-    float m = t * t;
+    float m;
+    if (t > 0.62f) m = 0.62f + (t - 0.62f) * 0.55f;   /* crest plateau */
+    else m = T_QUAD(t / 0.62f) * 0.62f;
 
     /* Passes: the crest rises and falls along the range at a ~800-unit
        wavelength, so a chain is massifs with saddles between them rather than a
@@ -389,6 +398,42 @@ static inline void terrain_erode(float *h, float *scratch, int n, float cell,
                         h[j] += move;
                     }
                 }
+            }
+        }
+    }
+}
+
+/* Summit smoothing: a box blur applied only above `thr`.
+
+   Ridged noise is pointy by construction -- it folds |n| at zero crossings, so
+   a crest is a row of needles and a big enough amplitude makes them spires.
+   Broadening the ridge wavelength helped; this is the other half: high ground
+   is averaged with its neighbours, low ground is untouched. It is a landform
+   edit, not erosion: erosion rounds a mountain over geological time by moving
+   mass, this rounds it now by forgiving the noise.
+
+   `passes` 2-3 is enough to turn a spire into a summit with shoulders; more
+   starts to look like a melted candle. Only lowering is applied, so a broad
+   summit cannot gain height from the blur and lift a whole ridge. */
+static inline void terrain_smooth_highs(float *h, float *scratch, int n, float thr,
+                                        int passes) {
+    for (int p = 0; p < passes; p++) {
+        for (int i = 0; i < n * n; i++) scratch[i] = h[i];
+        for (int z = 0; z < n; z++) {
+            for (int x = 0; x < n; x++) {
+                int i = z * n + x;
+                if (scratch[i] <= thr) continue;
+                float s = 0.0f;
+                int c = 0;
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = x + dx, nz = z + dz;
+                        if (nx < 0 || nz < 0 || nx >= n || nz >= n) continue;
+                        s += scratch[nz * n + nx];
+                        c++;
+                    }
+                float blur = s / (float)c;
+                if (blur < h[i]) h[i] = blur;
             }
         }
     }

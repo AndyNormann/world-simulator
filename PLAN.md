@@ -83,27 +83,28 @@ doing out of order.
 - Add `tools/terrain.sh 1 40` printing the quality table (not just per-seed
   lines) so "looks better" has a trend.
 
-### 1. Erosion that carves (1–2 sessions) — highest payoff
-Today's erosion is thermal only (`terrain_erode` clamps talus); it planes peaks,
-it does not cut valleys. Add a **flow-driven pass**: D8 flow directions on the
-grid, accumulation `A`, then stream-power `h -= k · A^0.45 · slope` for a handful
-of iterations, with a light sediment fill so basins don't become pits.
-- Why: a valley that widens downstream and meets its river at the right height
-  is the single strongest "this is rock, not noise" signal, and it makes ranges
-  navigable in a way the player learns.
-- Accept: channel sits at the local cross-section minimum; valley width at a
-  given river order grows ~1.5–2× from source to mouth; relief within 10 % of
-  today; sweep green; two 3D shots (alpine, rolling).
+### 1. Erosion that carves — **done, with a caveat** (landform valleys)
+Real flow erosion was attempted and **removed**: D8 routing on this noise field
+fragments into thousands of basins (accumulation tops out at ~9k cells of 1.4M,
+because the routed-on surface is the filled one and its flats have no downhill
+neighbour), so almost no water gathers and almost nothing erodes. Doing it
+properly means a priority-flood hydraulic solver over many iterations — hours
+per world. `carve_valleys()` gets the same shape by decree: a chamfer distance
+transform from the traced rivers, then a trough whose depth is a fraction of the
+local relief (capped 180 units) and whose width grows with depth, floored 12
+units above the river's own water level and skipped near the coast (a trough at
+sea level is a beach, not a valley). Measured: relief −6 %, land unchanged,
++0.1 s build.
 
-### 2. Crests, finished (1 session)
-Chains over a small island still produce rows of spires (seed 40), because the
-crest is noise along its whole length. Expose the chain's along-axis coordinate
-`u` from `terrain_chain()` and give the crest a profile that flattens and widens
-with `u` near the axis.
-- Accept: crest-curvature metric stops growing with relief; seed 40 reads as a
-  range, not a cluster.
+### 2. Crests — **done**
+The cause was the cross-section, not the along-axis noise: `(1-d)^2` is a cone.
+`terrain_chain` now returns a trapezoid (linear flanks, a plateau on top) over a
+1450-unit half-width, and `terrain_smooth_highs()` box-blurs only above 42 % of
+the summit so ridged-noise needles get shoulders without touching low ground.
+Seed 1 now reads as a forested island with a snow-capped peak; seed 40 as a range
+with snow on the highest shoulder instead of a row of spires.
 
-### 3. Climate with a north in it (1 session)
+### 3. Climate — partly done (treeline)
 Aspect (south-facing dry and warm, north-facing cold and retaining snow), a real
 wind march for the rain shadow instead of the current single upwind probe,
 a treeline separate from the snowline, and dithered/steepness-blended biome

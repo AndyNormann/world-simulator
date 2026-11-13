@@ -788,6 +788,159 @@ int lake_at(float x, float z) {
    edge instead of ending in a visible step; outside it the ground blends back
    up to untouched height over RIVER_BANK. Width comes from the segment, so the
    channel narrows as it climbs. */
+/* Valleys, cut by the rivers that are already there.
+
+   This is a *landform* pass, not a hydraulic solver. Two attempts at real flow
+   erosion failed for a reason worth recording: D8 routing on this noise field
+   fragments into thousands of small basins (accumulation tops out at ~9k cells
+   of 1.4M), so almost no water gathers and almost nothing erodes. A proper
+   fix is a priority-flood hydraulic solver over many iterations -- hours per
+   world, for a shape we can also get by decree.
+
+   The rivers are traced, ordered and trusted; the terrain around them is what
+   is wrong. So each river stamps a valley: a V profile whose depth and width
+   grow with the river's own width, which is exactly the "valleys widen
+   downstream" property without simulating a drop of water. Only lowering is
+   done -- a valley pass that raises ground is how you get lakes in meadows.
+
+   Why it is worth its cost: a range whose flanks all drain into one channel
+   reads as rock, where a range with the same silhouette does not. The player
+   also gets the thing terrain is *for* -- a route along the water, a ridge to
+   cross, a valley to be trapped in. */
+/* Valleys, cut by the rivers that are already there.
+
+   Two attempts at real flow erosion failed for a reason worth recording: D8
+   routing on this noise field fragments into thousands of small basins
+   (accumulation tops out at ~9k cells of 1.4M), so almost no water gathers and
+   almost nothing erodes. The honest fix is a priority-flood hydraulic solver
+   over many iterations -- hours per world, for a shape we can also decree.
+
+   The rivers are traced and trusted; it is the ground around them that is
+   wrong. So the valley is defined *relative to the river*: the floor is the
+   water level, the walls rise `depth` over `radius`, and only lowering is
+   applied. That is the shape water actually leaves -- a channel at the bottom
+   of a trough -- and it can never dig below its own river, which is what the
+   first attempt did (carving 200 units down on a plain put the whole valley
+   under the sea and the map filled with black holes).
+
+   Depth and radius come from the river's own width, so tributaries cut grooves
+   and trunks cut valleys -- the widening-downstream property, without a drop
+   of simulated water. Relief caps it: on a plain a river cannot cut 300 units
+   into ground that is only 20 units above the sea. */
+void carve_valleys(void) {
+    if (!seg_n) return;
+
+    /* Coarse fields, because a per-cell query cannot see far enough: river_query
+       only searches the bucket the point is in, which is right for painting a
+       25-unit bank and wrong for a 1000-unit valley. So rasterise the rivers on
+       a coarse grid and run a two-pass chamfer distance transform (with the
+       nearest river's water level carried along in the same pass). ~74 units
+       per cell, bilinear when sampled, which keeps the profile smooth. */
+    enum { VC = 16 };
+    int cn = N / VC + 1;
+    static float cdist[(N / 16 + 2) * (N / 16 + 2)];
+    static float clevel[(N / 16 + 2) * (N / 16 + 2)];
+    static float cmax[(N / 16 + 2) * (N / 16 + 2)];
+    for (int i = 0; i < cn * cn; i++) { cdist[i] = 1e6f; clevel[i] = 0.0f; cmax[i] = -1e30f; }
+
+    for (int zi = 0; zi < N; zi++)
+        for (int xi = 0; xi < N; xi++) {
+            int c = (zi / VC) * cn + xi / VC;
+            float h = heights[zi * N + xi];
+            if (h > cmax[c]) cmax[c] = h;
+        }
+
+    for (int s = 0; s < seg_n; s++) {
+        int ax = (int)((seg_x0[s] + TERRAIN_WORLD * 0.5f) / CELL) / VC;
+        int az = (int)((seg_z0[s] + TERRAIN_WORLD * 0.5f) / CELL) / VC;
+        int bx = (int)((seg_x1[s] + TERRAIN_WORLD * 0.5f) / CELL) / VC;
+        int bz = (int)((seg_z1[s] + TERRAIN_WORLD * 0.5f) / CELL) / VC;
+        if (ax < 0) ax = 0; if (ax >= cn) ax = cn - 1;
+        if (az < 0) az = 0; if (az >= cn) az = cn - 1;
+        if (bx < 0) bx = 0; if (bx >= cn) bx = cn - 1;
+        if (bz < 0) bz = 0; if (bz >= cn) bz = cn - 1;
+        int steps = abs(bx - ax) > abs(bz - az) ? abs(bx - ax) : abs(bz - az);
+        if (steps < 1) steps = 1;
+        for (int k = 0; k <= steps; k++) {
+            int cx = ax + (bx - ax) * k / steps;
+            int cz = az + (bz - az) * k / steps;
+            int c = cz * cn + cx;
+            cdist[c] = 0.0f;
+            clevel[c] = seg_w[s];
+        }
+    }
+
+    /* chamfer, forward then backward: distance in coarse cells plus the water
+       level of whichever river is nearest. 3x3 min-plus, twice -- cheap and
+       within a few percent of euclidean, which is all a valley profile needs */
+    for (int pass = 0; pass < 2; pass++) {
+        int zstart = pass ? cn - 1 : 0, zend = pass ? -1 : cn, zstep = pass ? -1 : 1;
+        for (int cz = zstart; cz != zend; cz += zstep) {
+            int xstart = pass ? cn - 1 : 0, xend = pass ? -1 : cn, xstep = pass ? -1 : 1;
+            for (int cx = xstart; cx != xend; cx += xstep) {
+                int c = cz * cn + cx;
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (!dx && !dz) continue;
+                        int nx = cx + dx, nz = cz + dz;
+                        if (nx < 0 || nz < 0 || nx >= cn || nz >= cn) continue;
+                        int n = nz * cn + nx;
+                        float step = (dx && dz) ? 1.4142f : 1.0f;
+                        if (cdist[n] + step < cdist[c]) {
+                            cdist[c] = cdist[n] + step;
+                            clevel[c] = clevel[n];
+                        }
+                    }
+            }
+        }
+    }
+
+    for (int zi = 0; zi < N; zi++) {
+        for (int xi = 0; xi < N; xi++) {
+            int i = zi * N + xi;
+            if (lake_cell[i]) continue;
+            /* bilinear sample of the coarse fields */
+            float fx = xi / (float)VC, fz = zi / (float)VC;
+            int x0 = (int)fx, z0 = (int)fz;
+            if (x0 >= cn - 1) x0 = cn - 2;
+            if (z0 >= cn - 1) z0 = cn - 2;
+            if (x0 < 0) x0 = 0;
+            if (z0 < 0) z0 = 0;
+            float tx = fx - x0, tz = fz - z0;
+            int c00 = z0 * cn + x0, c10 = c00 + 1, c01 = c00 + cn, c11 = c01 + 1;
+            float d = (cdist[c00] * (1 - tx) + cdist[c10] * tx) * (1 - tz)
+                    + (cdist[c01] * (1 - tx) + cdist[c11] * tx) * tz;
+            float wl = (clevel[c00] * (1 - tx) + clevel[c10] * tx) * (1 - tz)
+                     + (clevel[c01] * (1 - tx) + clevel[c11] * tx) * tz;
+            /* near the coast the river is at sea level, and a carved floor
+               there is a sand flat, not a valley: leave coastal lowlands be */
+            if (wl < 25.0f) continue;
+            float local = (cmax[c00] * (1 - tx) + cmax[c10] * tx) * (1 - tz)
+                        + (cmax[c01] * (1 - tx) + cmax[c11] * tx) * tz;
+            /* meters: coarse distance in coarse cells -> world units */
+            float dist = d * VC * CELL;
+            float room = local - wl;                 /* rock above the river */
+            if (room < 0.0f) room = 0.0f;
+            float depth = 0.28f * room;
+            if (depth > 180.0f) depth = 180.0f;
+            if (depth < 20.0f) depth = 20.0f;        /* every river has a trough */
+            float radius = 240.0f + 1.6f * depth;    /* deeper valleys are wider */
+            if (dist > radius) continue;
+            float k = 1.0f - dist / radius;
+            k *= k;                                  /* flat floor, steep walls */
+            /* Remove material rather than clamp to a profile height: clamping
+               put a ceiling over everything within the radius, so peaks a few
+               hundred metres from a creek were planed off and the alpine
+               archetype stopped being alpine. */
+            float target = heights[i] - depth * k;
+            /* floor well above the water, or the valley bottom lands in the
+               sand band (h < 3) and every eroded trough reads as a beach */
+            if (target < wl + 12.0f) target = wl + 12.0f;
+            if (target < heights[i]) heights[i] = target;
+        }
+    }
+}
+
 void carve_river(void) {
     if (!seg_n) return;
     for (int zi = 0; zi < N; zi++) {
@@ -929,8 +1082,12 @@ void place_trees(unsigned seed) {
             float y = surface_height(x, z);
             /* the treeline follows the summit, not a fixed altitude: a fixed
                one either buries the peak in forest or leaves the lowland bare
-               as soon as the amplitude changes */
-            float treeline = 0.40f * peak_y;
+               as soon as the amplitude changes. It also follows latitude --
+               north is the cold end, and a north-facing hillside loses its
+               trees lower down. That is the visible part of "the north". */
+            float lat = (z + TERRAIN_WORLD * 0.5f) / TERRAIN_WORLD;
+            float treeline = snow_line_at(lat) * 0.52f;
+            if (treeline > 0.55f * peak_y) treeline = 0.55f * peak_y;
             if (y < 5.0f || y > treeline) continue;   /* no water, sand or snow */
             if (near_water(x, z)) continue;
             float e = CELL;
@@ -2050,12 +2207,23 @@ void build_world_data(unsigned seed) {
        clamp is generous (6 cells of drop per cell ~= an 80-degree wall), so it
        removes needles and leaves cliffs and range flanks alone. */
     terrain_despike(heights, N, 6.0f * CELL);
+    {
+        /* round the summits, but only the summits: thr sits above the ridge
+           line so the meadows and the range flanks are untouched */
+        float hi = 0.0f;
+        for (int i = 0; i < N * N; i++) if (heights[i] > hi) hi = heights[i];
+        terrain_smooth_highs(heights, scratch, N, 0.42f * hi, 4);
+    }
+    terrain_despike(heights, N, 6.0f * CELL);
 
     /* Lakes first: they flatten their basins, which changes where the river
        can run. Then carve the channel, before the shadow/AO bake so the water
        gets its own shading. */
     build_hydrology(seed);
     build_seg_index();
+    carve_river();
+    carve_river();
+    carve_valleys();
     carve_river();
     /* Again, and last: lake basins are flattened and the channel is carved
        after the first clamp, and both cut vertical steps into the field. */
