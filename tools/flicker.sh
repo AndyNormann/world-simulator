@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
-# Sub-pixel stability, per seed. A renderer that shimmers reports a large number
-# here and a stable one reports a small one; the thresholds are what "no visible
-# flicker while walking" is asserted as.
+# Sub-pixel and in-motion stability, per seed, on the ground and high up.
 #
 #   tools/flicker.sh 1 12 40
+#
+# `static` is the accumulator converging: it must be ~0 or the temporal filter
+# is rippling. `walk` is the average frame-to-frame change while moving 0.6
+# units per frame -- that is the number the player calls flicker, and it is the
+# reason the altitude case exists: the first TAA pass reset its history on any
+# camera movement, so it did nothing exactly when it was needed, and that was
+# only visible from height.
+#
+# The pixel counts are contrast-weighted, so they are a regression alarm rather
+# than a perceptual score: a sharper image legitimately scores worse.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh >/dev/null
 fail=0
 for s in "$@"; do
-    line=$(./build/game shot --seed "$s" --size 800x450 --flicker 2>/dev/null | grep '^flicker')
-    echo "$line"
-    # A regression alarm, not a perceptual score: the pixel count is weighted by
-    # contrast, so a sharper image legitimately scores worse. What it catches is
-    # the renderer going wrong -- a blend weight stuck at zero, a broken
-    # reprojection, unstable streaming -- not small quality changes.
-    static=$(echo "$line" | sed -n 's/.*static=\([0-9.]*\)%.*/\1/p')
-    yaw=$(echo "$line" | sed -n 's/.* yaw=\([0-9.]*\)%.*/\1/p')
-    walk=$(echo "$line" | sed -n 's/.* walk=\([0-9.]*\)%.*/\1/p')
-    awk -v a="$static" -v b="$yaw" -v c="$walk" 'BEGIN{ if (a > 0.5 || b > 20.0 || c > 6.0) exit 1 }' || {
-        echo "flicker: seed $s regressed (static=$static% yaw=$yaw% walk=$walk%)"
-        fail=1
-    }
+    for view in "ground:" "high:--cam -300,2500,600 --yaw 160 --pitch -35"; do
+        name=${view%%:*}
+        args=${view#*:}
+        line=$(./build/game shot --seed "$s" --size 800x450 $args --flicker 2>/dev/null | grep '^flicker')
+        echo "$name $line"
+        static=$(echo "$line" | sed -n 's/.*static=\([0-9.]*\)%.*/\1/p')
+        walk=$(echo "$line"   | sed -n 's/.* walk=\([0-9.]*\)%.*/\1/p')
+        awk -v a="$static" -v b="$walk" 'BEGIN{ if (a > 0.5 || b > 4.5) exit 1 }' || {
+            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk%)"
+            fail=1
+        }
+    done
 done
 [ $fail -eq 0 ] && echo "flicker: ok" || exit 1

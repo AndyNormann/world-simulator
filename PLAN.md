@@ -232,21 +232,36 @@ needs depth. `GFX_MSAA` is 1 and the pipeline is written for it.
 
 ### Measured
 
-`tools/flicker.sh 1 12 40` at 800x450, ssaa 2, converged:
+`tools/flicker.sh 1 12 40` at 800x450, ssaa 2. `walk` is the mean frame-to-frame
+change while moving 0.6 units per frame; ground is the auto-framed camera, high
+is `cam -300,2500,600 pitch -35`.
 
-| seed | static | yaw 0.02° | pitch 0.02° | walk (0.6 u/frame) |
-|---|---|---|---|---|
-| 1 | 0.00 % | 1.21 % | 1.21 % | 3.77 % |
-| 12 | 0.00 % | 4.33 % | 1.16 % | 1.44 % |
-| 40 | 0.00 % | 6.61 % | 4.23 % | 2.60 % |
+| seed | static | walk (ground) | walk (high) |
+|---|---|---|---|
+| 1 | 0.00 % | 3.76 % | 1.69 % |
+| 12 | 0.00 % | 1.24 % | 2.11 % |
+| 40 | 0.00 % | 2.58 % | 2.08 % |
 
-`static` is the convergence check and is the only number that is meaningful in
-isolation: 0.00 % means the accumulator settles instead of rippling. The other
-columns are **weighted by contrast**, so a sharper image scores worse and a
-blurred one scores better; they are a regression alarm (a broken blend weight,
-a broken reprojection, streaming churn), not a perceptual score. That is also
-why TAA's improvement here looks modest — part of what it removes is aliasing
-and part of what it adds is sharpness.
+Before this pass the same walk was 6–12 % and the harness was measuring the
+wrong thing: see below.
+
+### The bug that made the first TAA pass useless
+
+The first version reset the accumulator whenever the camera moved (`taa_n = 0`
+on any change), which meant the blend weight was **zero on every frame while
+walking** — TAA averaged nothing exactly when the player is moving, and only
+worked while standing still, which is where nobody looks for flicker. It was
+invisible in the converged-still metric for the same reason.
+
+Now the history survives motion: reprojection carries it, a 3x3 clamp bounds
+it, and only a *teleport* (a jump no walk could make, >50 units in a frame) or
+the loading→loaded transition invalidates it.
+
+The second half of the fix was the sign of the jitter in the reconstruction
+ray: the projection is jittered by `proj[8] -= jx`, so a pixel's sample ray is
+`p + j`, not `p - j`. With the wrong sign the history landed up to a pixel away
+from where it belonged, which is harmless at ground level and obvious from
+height, where every pixel covers hundreds of units of world.
 
 ### Still open
 

@@ -349,7 +349,7 @@ void main() {
         // decode, and no precision lost to an 8-bit channel
         float dist = d;
         // the sample this pixel actually took, jitter included
-        vec2 ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0) - pz.zw;
+        vec2 ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0) + pz.zw;
         // the ray's forward component is exactly 1, so scaling by `dist`
         // (the view-axis distance) lands on the right point without a divide
         vec3 ray = cf.xyz + cr.xyz * ndc.x + cu.xyz * ndc.y;

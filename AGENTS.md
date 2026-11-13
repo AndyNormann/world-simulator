@@ -261,5 +261,14 @@ alone can silently produce a header that does not match the headers.
   `settle()` in the probe zeroes `taa_n`/`prev_vp_valid` first. Without that,
   the golden images depend on how many frames the chunk streamer happened to
   need, which is not reproducible.
-- **`tools/flicker.sh 1 12 40`** is the gate. Its pixel counts are
-  contrast-weighted: sharper scores worse. Treat it as a regression alarm.
+- **TAA must not be reset by camera motion.** Resetting the accumulator when the
+  camera moves makes the blend weight zero on every frame of a walk, so the
+  filter silently does nothing where it matters. Only a teleport (>50 units in
+  one frame) or the loading transition clears the history.
+- **Jitter sign.** The projection is jittered by `proj[8] -= jx` / `proj[9] -= jy`,
+  so the reconstruction ray for a pixel is `ndc + jitter`, not `- jitter`. Get it
+  wrong and the history lands a pixel off — invisible on the ground, obvious at
+  altitude.
+- **`tools/flicker.sh 1 12 40`** is the gate, and it checks a *high* camera as
+  well as the ground. Pixel counts are contrast-weighted: sharper scores worse.
+  Treat it as a regression alarm.

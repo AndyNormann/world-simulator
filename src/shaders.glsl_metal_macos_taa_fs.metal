@@ -43,7 +43,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant taa_params& _50 [[bu
     }
     if (_58)
     {
-        float2 _83 = float2((in.v_uv.x * 2.0) - 1.0, 1.0 - (in.v_uv.y * 2.0)) - _50.pz.zw;
+        float2 _83 = float2((in.v_uv.x * 2.0) - 1.0, 1.0 - (in.v_uv.y * 2.0)) + _50.pz.zw;
         float4 _122 = _50.prev_vp * float4(_50.eye.xyz + (((_50.cf.xyz + (_50.cr.xyz * _83.x)) + (_50.cu.xyz * _83.y)) * _38), 1.0);
         float _124 = _122.w;
         if (_124 > 0.0)

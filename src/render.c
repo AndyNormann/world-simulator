@@ -185,20 +185,20 @@ static sg_view hist_view[2], hist_tex[2];
 static sg_sampler lin_smp, near_smp;
 static sg_pipeline taa_pip, present_pip;
 static float prev_vp[16];
-/* Frames accumulated since the camera last moved. The blend weight is n/(n+1),
-   so a still camera converges to the exact average of 16 jittered samples --
-   deterministic, which is what a golden image needs -- while a moving one
-   adapts immediately (first frame of new motion keeps no history at all). */
-static int taa_n = 0;
-static float taa_last_yaw = 1e9f, taa_last_pitch = 1e9f,
-             taa_last_x = 1e9f, taa_last_y = 1e9f, taa_last_z = 1e9f;
 static float prev_vp_valid = 0.0f;
+/* TAA state. The accumulator must NOT be reset when the camera moves -- that is
+   precisely when it earns its keep, and resetting on motion is what made the
+   first version do nothing at all while walking. Only a teleport and the
+   loading->loaded transition invalidate the history; everything else is
+   handled by reprojection plus the neighbourhood clamp. */
+static int taa_phase = 0;
+static float taa_last_x = 0.0f, taa_last_y = 0.0f, taa_last_z = 0.0f;
 static int hist_cur = 0, hist_drawn = 0;
 static int tgt_w = 0, tgt_h = 0;
 static id<MTLTexture> mtl_hist[2];
 static id<MTLTexture> mtl_color, mtl_depth;
 
-#define TAA_BLEND 0.95f
+#define TAA_BLEND 0.90f
 
 static void targets_free(void) {
     if (tgt_w == 0) return;
@@ -520,17 +520,13 @@ void render(int w, int h) {
        TAA pass averages the results, so eight frames behave like a 2x2-to-3x3
        supersample without the memory. m[8] carries the x offset because
        clip.w = -z_view, so adding jx*clip.w is m[8] -= jx. */
-    if (yaw != taa_last_yaw || pitch != taa_last_pitch || cam_x != taa_last_x
-        || cam_y != taa_last_y || cam_z != taa_last_z) {
-        taa_n = 0;
-        taa_last_yaw = yaw; taa_last_pitch = pitch;
+    /* a jump no walk could make is a cut: the history is from another place */
+    {
+        float jx = cam_x - taa_last_x, jy = cam_y - taa_last_y, jz = cam_z - taa_last_z;
+        if (jx*jx + jy*jy + jz*jz > 50.0f * 50.0f) prev_vp_valid = 0.0f;
         taa_last_x = cam_x; taa_last_y = cam_y; taa_last_z = cam_z;
-    } else {
-        taa_n++;             /* uncapped: the jitter must keep cycling after the
-                                weight saturates, or a still camera freezes on
-                                one sample instead of averaging sixteen */
     }
-    int ji = taa_n & 15;
+    int ji = taa_phase++ & 15;
     float jx = (halton(ji + 1, 2) - 0.5f) * 2.0f / (float)rw;
     float jy = (halton(ji + 1, 3) - 0.5f) * 2.0f / (float)rh;
 
@@ -644,6 +640,7 @@ void render(int w, int h) {
         taa_pass(rw, rh, jx, jy, 0.0f, fx, fy, fz);
         present_pass();
         prev_vp_valid = 0.0f;    /* the first real frame starts from nothing */
+        taa_phase = 0;           /* ...and from a known jitter phase */
         sg_commit();
         return;
     }
@@ -684,13 +681,7 @@ void render(int w, int h) {
     sg_apply_bindings(&bindings);
     sg_draw(0, decor_words / VERT_FLOATS, 1);
     sg_end_pass();
-    {
-        int n = taa_n < 63 ? taa_n : 63;   /* progressive: the newest sample
-                                                weighs 1/(n+1), so a still frame
-                                                converges instead of rippling */
-        taa_pass(rw, rh, jx, jy, prev_vp_valid ? (float)n / (float)(n + 1) : 0.0f,
-                 fx, fy, fz);
-    }
+    taa_pass(rw, rh, jx, jy, prev_vp_valid ? TAA_BLEND : 0.0f, fx, fy, fz);
     present_pass();
     memcpy(prev_vp, mvp, sizeof(prev_vp));
     prev_vp_valid = 1.0f;
@@ -791,7 +782,7 @@ static void settle(int frames) {
     /* start every measurement from a known accumulator: a value that depends on
        how many frames the streamer happened to need is not a measurement */
     prev_vp_valid = 0.0f;
-    taa_n = 0;
+    taa_phase = 0;
     for (int i = 0; i < frames; i++) grab();
 }
 
@@ -834,10 +825,17 @@ void flicker_probe(void) {
     settle(48);
     memcpy(base, cap_buf, bytes);
     float walk = 0.0f;
+    const char *dump = getenv("FLICKER_DUMP");
     for (int i = 0; i < 30; i++) {
         cam_x += sinf(yaw) * 0.6f;
         cam_z += cosf(yaw) * 0.6f;
         grab();
+        if (dump) {
+            char p[512];
+            snprintf(p, sizeof p, "%s/walk-%02d.png", dump, i);
+            if (fb_buf && gfx_ssaa > 1) { /* cap_buf is already the output size */ }
+            stbi_write_png(p, gfx_w, gfx_h, 4, cap_buf, gfx_w * 4);
+        }
         walk += flicker_pct(base, cap_buf, 0);
         memcpy(base, cap_buf, bytes);
     }
