@@ -140,7 +140,7 @@ G(chunk_t chunks[NCHUNKS])
    the release/acquire pair is what publishes the payload. */
 
 /* --- layout constants declared further down the original file ----*/
-enum { TREE_PINE, TREE_FIR, TREE_SPIRE, TREE_BROADLEAF, TREE_ACACIA, TREE_KINDS };
+enum { TREE_PINE, TREE_FIR, TREE_SPIRE, TREE_BROADLEAF, TREE_ACACIA, TREE_ROCK, TREE_KINDS };
 typedef struct {
     float x, z, y, h, r;
     unsigned hash;
@@ -352,6 +352,8 @@ void emit_tri(const float *p0, const float *p1, const float *p2, const float *in
 int river_bed_ok(float x, float z);
 int near_water(float x, float z);
 void place_trees(unsigned seed);
+void place_rocks(unsigned seed);
+void emit_rock(const tree_t *t);
 void emit_trunk(const tree_t *t, float by, float th, float tr);
 void emit_tier(const tree_t *t, float by, float y0, float y1, float rr, float H, const float *col, int k);
 void emit_blob(const tree_t *t, float cx, float cy, float cz, float rx, float ry, float rz, const float *col, int lobe);

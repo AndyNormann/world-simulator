@@ -120,12 +120,18 @@ a sheltered bay gets sand, an exposed west-facing shore stays rock. Sea stacks,
 tidal flats, estuaries and deltas are **not** done -- the first three need
 generated geometry and the last two need the hydrology work below.
 
-### 5. Hydrology detail — waterfalls done, the rest not
-Waterfalls are in: a river facet whose surface drops more than 14 units over two
-cells is painted as foam and gets a faster ripple. It was the cheapest of the
-list and the one with the most gameplay value -- a fall is the best chokepoint a
-river offers, and the sim should be able to find them. Meanders, floodplain
-widening, real lake outflow and endorheic basins are not done.
+### 5. Hydrology detail — waterfalls + meanders done
+Waterfalls: a river facet whose surface drops more than 14 units over two cells
+is painted as foam with a faster ripple. Cheapest item on the list and the one
+with the most gameplay value -- a fall is the best chokepoint a river offers.
+
+Meanders: interior path points are pushed sideways by a slow sine whose
+amplitude grows with the river's size and dies on steep reaches (mountain water
+runs straight down the fall line, lowland water loops); endpoints are pinned so
+tributaries still meet the trunk and the mouth still reaches the sea. Amplitude
+is under a cell, so it reads in a close 3D frame, not on the 512-px map.
+
+Floodplain widening, lake outflow and endorheic basins are still open.
 
 ### 6. Terrain exports a geography — **done** (coarse grid)
 `build_geography()` fills a 64x64 grid (275 units/cell) of `geo_cell_t`:
@@ -143,11 +149,14 @@ PLAN rule 4, still unbuilt: ~256² always-resident coarse field plus per-region
 64² fine fields generated on demand, `bake_ambient` per region instead of over
 the world. Trigger: a world larger than 17600, or needing the memory back.
 
-### 8. Beyond the heightfield (2 sessions, after M2/M3)
-Scree, boulders, dead trees and rock outcrops as generated decor — they are also
-climb affordances, so this is partly art direction and partly level design.
-Real overhangs/arches/caves need geometry with collision; a heightfield cannot
-express them, and the demon's climbing makes them valuable.
+### 8. Beyond the heightfield — rocks done, overhangs not
+Boulders, scree chips and sea stacks are in as scenery instances (`TREE_ROCK`)
+in the same list, chunk assignment and shading path as trees: four triangles with
+a jittered base and an off-centre apex, no wind sway. ~7k per world, on steep or
+high ground, with the sea stacks only in shallow water on exposed shores. They
+are scale cues *and* climb affordances. Dead trees, overhangs, arches and caves
+are not done -- the last three need geometry with collision and a heightfield
+cannot express them.
 
 ### Deliberately not planned
 Long-run physically simulated erosion (hours per world), texture detail, glacier

@@ -757,12 +757,47 @@ void build_hydrology(unsigned seed) {
             path[np++] = c2;
             if (h_fill[c2] <= 0.0f) break;
         }
+        /* Meanders: a river on flat ground wanders, and a straight line from
+           spring to sea is the single clearest sign that water was not what
+           drew it. Each interior point is pushed sideways by a slow sine whose
+           amplitude grows with the river's size and dies on steep reaches --
+           mountain water runs straight down the fall line, lowland water
+           loops. Endpoints are pinned so tributaries still meet the trunk and
+           the mouth still reaches the sea. */
+        float px[RIVER_MAX], pz[RIVER_MAX];
+        for (int k = 0; k < np; k++) {
+            px[k] = (path[k] % N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+            pz[k] = (path[k] / N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+        }
+        {
+            float s = 0.0f;
+            for (int k = 1; k + 1 < np; k++) {
+                float dx = px[k + 1] - px[k - 1], dz = pz[k + 1] - pz[k - 1];
+                float l = sqrtf(dx * dx + dz * dz);
+                if (l < 1e-3f) continue;
+                float nx = -dz / l, nz = dx / l;
+                s += CELL;
+                float t = sqrtf(h_acc[path[k]] / best_acc);
+                /* how steep is the reach? straight where it is steep */
+                float drop = h_fill[path[k]] - h_fill[path[k + 1]];
+                float flat = 1.0f - fminf(drop / (1.6f * CELL), 1.0f);
+                float amp = CELL * (0.35f + 0.75f * t) * flat;
+                float offs = amp * sinf(s * (6.2831853f / (14.0f * CELL))
+                                        + (float)(seed & 255u) * 0.19f);
+                px[k] += nx * offs;
+                pz[k] += nz * offs;
+            }
+            /* the mouth keeps its position: a meander must not move where the
+               river meets the sea, or the outlet wanders off the coast */
+            px[np - 1] = (path[np - 1] % N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+            pz[np - 1] = (path[np - 1] / N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+        }
         for (int k = 0; k + 1 < np && seg_n < RIVER_MAX_SEG; k++) {
-            int a = path[k], b = path[k + 1];
-            seg_x0[seg_n] = (a % N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
-            seg_z0[seg_n] = (a / N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
-            seg_x1[seg_n] = (b % N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
-            seg_z1[seg_n] = (b / N) / (float)(N - 1) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+            int a = path[k];
+            seg_x0[seg_n] = px[k];
+            seg_z0[seg_n] = pz[k];
+            seg_x1[seg_n] = px[k + 1];
+            seg_z1[seg_n] = pz[k + 1];
             seg_w[seg_n] = h_fill[a];
             /* width follows drainage area, so the channel narrows as it climbs
                instead of running as a canal from the summit to the sea */
@@ -1071,6 +1106,53 @@ int near_water(float x, float z) {
     return 0;
 }
 
+/* Rocks: boulders on steep or high ground, scree at the foot of the steep bits,
+   sea stacks along exposed coasts. Deterministic from the seed and the cell, so
+   a chunk that is rebuilt gets the same rocks back. */
+void place_rocks(unsigned seed) {
+    enum { RSTEP = 5 };
+    for (int gz = 0; gz < N / RSTEP; gz++) {
+        for (int gx = 0; gx < N / RSTEP; gx++) {
+            unsigned h = terrain_hash(gx, gz, seed ^ 0x2b2b2b1du);
+            float r0 = (float)(h & 1023u) / 1023.0f;
+            if (r0 > 0.62f) continue;                      /* sparse, but present */
+            float x = (gx + ((h >> 10) & 1023u) / 1023.0f) * RSTEP * CELL - TERRAIN_WORLD * 0.5f;
+            float z = (gz + ((h >> 20) & 1023u) / 1023.0f) * RSTEP * CELL - TERRAIN_WORLD * 0.5f;
+            float y = surface_height(x, z);
+            float e = 3.0f * CELL;
+            float sx = surface_height(x + e, z) - surface_height(x - e, z);
+            float sz = surface_height(x, z + e) - surface_height(x, z - e);
+            float slope = sqrtf(sx * sx + sz * sz) / (2.0f * e);
+            float r1 = (float)((h >> 4) & 1023u) / 1023.0f;
+            float r2 = (float)((h >> 14) & 1023u) / 1023.0f;
+
+            float rh, rr;
+            if (y < 2.0f) {
+                /* sea stack: only in shallow water, only on an exposed shore, and
+                   only where the swell would actually leave one standing */
+                if (y < -14.0f) continue;
+                if (biome_shelter(x, z) > 0.30f) continue;
+                if (r2 > 0.35f) continue;
+                rh = 6.0f + 26.0f * r1;
+                rr = rh * (0.22f + 0.20f * r2);
+                y = 0.0f;
+            } else {
+                /* boulders and scree: steep ground, or high open ground */
+                if (slope < 0.34f && y < 0.30f * peak_y) continue;
+                rh = 2.0f + 11.0f * r1 * r1;
+                rr = rh * (0.75f + 0.7f * r2);
+                if (r2 < 0.30f) { rh *= 0.45f; rr *= 0.75f; }   /* scree chip */
+            }
+            if (tree_count >= MAX_TREES) return;
+            tree_t *t = &trees[tree_count++];
+            t->x = x; t->z = z; t->y = y;
+            t->h = rh; t->r = rr;
+            t->hash = h;
+            t->kind = TREE_ROCK;
+        }
+    }
+}
+
 void place_trees(unsigned seed) {
     /* spacing must exceed the canopy diameter (~0.57 * height) or neighbouring
        trees merge into one silhouette -- the reference shows isolated crowns */
@@ -1230,11 +1312,45 @@ void emit_blob(const tree_t *t, float cx, float cy, float cz,
 
 
 
+/* Boulders and sea stacks, as scenery instances in the tree list: same chunk
+   assignment, same snap to the drawn surface, same baked shade. A rock is four
+   triangles with a jittered base and an off-centre apex, which at the size these
+   appear is the whole difference between "a hillside" and "a hillside with
+   scale". They also tell the player where the climbable ground is. */
+void emit_rock(const tree_t *t) {
+    unsigned h = t->hash;
+    float r = t->r, ht = t->h;
+    float by = t->y - 0.25f * ht;
+    float tint = 0.82f + 0.30f * ((h >> 3) & 255u) / 255.0f;
+    float col[3] = { 0.44f * tint, 0.32f * tint, 0.20f * tint };
+    float top[3] = { col[0] * 1.18f, col[1] * 1.18f, col[2] * 1.12f };
+    float ax = t->x + ((h & 31u) / 31.0f - 0.5f) * r * 0.7f;
+    float az = t->z + (((h >> 5) & 31u) / 31.0f - 0.5f) * r * 0.7f;
+    sway_base = by - ht;              /* no bend: the whole rock is at "root" */
+    sway_h = 1.0f;
+    float apex[3] = { ax, by + ht, az };
+    float base[4][3];
+    for (int k = 0; k < 4; k++) {
+        float a = (float)k * 1.5707963f + ((h >> (8 + k * 2)) & 15u) / 15.0f * 0.5f;
+        float rr = r * (0.72f + (((h >> (16 + k)) & 15u) / 15.0f) * 0.55f);
+        base[k][0] = t->x + cosf(a) * rr;
+        base[k][1] = by - 0.15f * ht;
+        base[k][2] = t->z + sinf(a) * rr;
+    }
+    for (int k = 0; k < 4; k++) {
+        int k2 = (k + 1) & 3;
+        float p0[3] = { base[k][0], base[k][1], base[k][2] };
+        float p1[3] = { base[k2][0], base[k2][1], base[k2][2] };
+        emit_tri(p0, apex, p1, apex, k & 1 ? col : top, 0.12f);
+    }
+}
+
 void emit_tree(const tree_t *t) {
     float H = t->h;
     unsigned h = t->hash;
     float by = t->y - 2.5f;            /* sunk: grid skew/jitter can lift the mesh */
     float tint = 0.86f + 0.28f * ((h & 255u) / 255.0f);   /* per-tree variation */
+    if (t->kind == TREE_ROCK) { emit_rock(t); return; }
     const float *base = LEAF_COL;
     switch (t->kind) {
     case TREE_FIR:       base = FIR_COL;       break;
@@ -1391,7 +1507,13 @@ void emit_cloud(unsigned seed) {
    failure mode of the placement maths, and it is invisible in a screenshot. */
 void trees_selfcheck(void) {
     for (int i = 0; i < tree_count; i++) {
-        assert(trees[i].y > 0.0f && trees[i].h > 0.0f && trees[i].r > 0.0f);
+        assert(trees[i].h > 0.0f && trees[i].r > 0.0f);
+        if (trees[i].kind == TREE_ROCK) {
+            /* sea stacks stand in the water with their base below it */
+            assert(trees[i].y >= 0.0f || trees[i].y < -1.0f);
+            continue;
+        }
+        assert(trees[i].y > 0.0f);
         assert(fabsf(trees[i].y - surface_height(trees[i].x, trees[i].z)) < 1e-3f);
     }
 }
@@ -2321,6 +2443,7 @@ void build_world_data(unsigned seed) {
 
     /* trees before anything that marches the horizon: a crown is an occluder */
     place_trees(seed);
+    place_rocks(seed);
     build_tree_index();
     build_geography();
     world_stats();
@@ -2501,8 +2624,10 @@ void build_terrain(unsigned seed) {
            at this point nothing is shaded yet. The capture sidecar reports it
            once the world has settled. */
         (void)lit;
-        fprintf(stderr, "terrain: trees=%d  mean |dh| per cell=%.2f (cell %.2f) peak=%.0f,%.0f,%.0f\n",
-                tree_count, relief / rn, CELL, peak_x, peak_y, peak_z);
+        int nrock = 0;
+        for (int i = 0; i < tree_count; i++) if (trees[i].kind == TREE_ROCK) nrock++;
+        fprintf(stderr, "terrain: trees=%d rocks=%d mean |dh| per cell=%.2f (cell %.2f) peak=%.0f,%.0f,%.0f\n",
+                tree_count - nrock, nrock, relief / rn, CELL, peak_x, peak_y, peak_z);
     }
 }
 
