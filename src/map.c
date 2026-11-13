@@ -82,9 +82,10 @@ static void report(unsigned seed) {
         if (heights[i] < lo) lo = heights[i];
     }
     printf("world %u: %-11s land=%.1f%% masses=%d towns=%d viable=%d rivers=%d "
-           "lakes=%d trees=%d h=%.0f..%.0f relief=%.0f slope=%.1f cell=%.2f\n",
+           /* pass count: saddles through ranges, the map's chokepoints */
+           "passes=%d lakes=%d trees=%d h=%.0f..%.0f relief=%.0f slope=%.1f cell=%.2f\n",
            seed, terrain_gen(seed).name, 100.0f * (float)land / (float)(N * N), masses,
-           land_town_masses, land_viable, river_count, lakes,
+           land_town_masses, land_viable, river_count, pass_count(), lakes,
            tree_count, lo, hi, hi - lo, dmax / CELL, CELL);
 }
 

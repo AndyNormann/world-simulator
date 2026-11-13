@@ -104,31 +104,39 @@ the summit so ridged-noise needles get shoulders without touching low ground.
 Seed 1 now reads as a forested island with a snow-capped peak; seed 40 as a range
 with snow on the highest shoulder instead of a row of spires.
 
-### 3. Climate — partly done (treeline)
-Aspect (south-facing dry and warm, north-facing cold and retaining snow), a real
-wind march for the rain shadow instead of the current single upwind probe,
-a treeline separate from the snowline, and dithered/steepness-blended biome
-transitions instead of hard bands. Riparian green along rivers.
-- Accept: biome entropy up without violating latitudinal order; a north and a
-  south shot that are distinguishable without the sun.
+### 3. Climate — **done**
+`biome_moisture()` is now its own function -- one number computed from interior
+distance, a three-tap upwind rain-shadow march (250/600/1000 units, not one
+probe), aspect (north-facing is wetter and colder) and latitude -- and it is used
+two ways: `biome_id()` classifies with it for the sim, `biome_rgb()` blends
+steppe→meadow→forest continuously with it for the eye. The treeline follows
+latitude via `snow_line_at(lat) * 0.52` instead of a fixed fraction of the
+summit. Hard colour bands were the worst offender: they read as paint-by-numbers
+from above and as a stripe from the ground.
 
-### 4. Coasts (1 session)
-Wave exposure decides the profile: west-facing cliffs and stacks, east-facing
-beaches and tidal flats; estuaries where a river meets the sea; a delta where a
-slow river does.
-- Why: the coast is where a player arrives and where ports and sea trade live.
+### 4. Coasts — partly done (shelter decides sand vs rock)
+`biome_shelter()` samples the sea 300/700/1200 units west (the wind direction):
+a sheltered bay gets sand, an exposed west-facing shore stays rock. Sea stacks,
+tidal flats, estuaries and deltas are **not** done -- the first three need
+generated geometry and the last two need the hydrology work below.
 
-### 5. Hydrology detail (1 session, needs 1)
-Meanders and floodplain widening on low-gradient reaches, lake basins with a
-real level and an outflow, waterfall markers where a river crosses a steep step
-(they are natural chokepoints and should be visible from the map), endorheic
-basins in dry interiors.
+### 5. Hydrology detail — waterfalls done, the rest not
+Waterfalls are in: a river facet whose surface drops more than 14 units over two
+cells is painted as foam and gets a faster ripple. It was the cheapest of the
+list and the one with the most gameplay value -- a fall is the best chokepoint a
+river offers, and the sim should be able to find them. Meanders, floodplain
+widening, real lake outflow and endorheic basins are not done.
 
-### 6. Terrain exports a geography (1 session, needs 1–3)
-Name what already exists: basins, passes (with width and height), valley mouths,
-harbors, arable area per region. `src/sim.c` should consume *those* instead of
-re-probing cells, so the economy is built on geography the player can see and
-walk to — and so "cut the pass" is a thing that can be done.
+### 6. Terrain exports a geography — **done** (coarse grid)
+`build_geography()` fills a 64x64 grid (275 units/cell) of `geo_cell_t`:
+height, slope, moisture, biome, distance to water, distance to the sea, and
+whether the cell is a **pass** (ground rising on both sides along one axis, above
+28 % of the summit). `sim.c` now asks only that grid -- no `sample_height()`, no
+`river_query()` -- which is PLAN rule 4 made true for the sim before the
+streaming work needs it. The map line reports `passes=`, so range shape changes
+show up as a number. First effect on the sim: it now prefers a town on a pass or
+a harbour, and food output had to be retuned because the new fertility
+distribution was leaner.
 
 ### 7. Scale: coarse field + streamed regions (2–3 sessions, only when it bites)
 PLAN rule 4, still unbuilt: ~256² always-resident coarse field plus per-region

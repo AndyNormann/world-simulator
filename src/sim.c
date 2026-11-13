@@ -72,80 +72,61 @@ static void place_name(char *out, unsigned seed, int id, int polity) {
     snprintf(out, 24, "%s%s", a[h % 26u], b[(h >> 8) % 16u]);
 }
 
-/* --- placement ------------------------------------------------------------ */
+/* --- placement ------------------------------------------------------------
+   Every question a site asks is answered by the coarse geography grid, never by
+   the heightfield: that is the rule the region streaming will depend on, and it
+   is free to obey now. 64x64 cells of 275 units is finer than any decision here
+   needs to be -- siting a town is a question about a valley, not a cell. */
 
-static float site_relief(float x, float z) {
-    float lo = 1e9f, hi = -1e9f;
-    for (int k = 0; k < 8; k++) {
-        float a = (float)k * 0.7854f, d = (k & 1) ? 420.0f : 260.0f;
-        float h = surface_height(x + cosf(a) * d, z + sinf(a) * d);
-        if (h < lo) lo = h;
-        if (h > hi) hi = h;
-    }
-    return hi - lo;
+static int rock_near_ore(const geo_cell_t *g) {
+    return g->biome == BIOME_ROCK;
 }
 
-static int near_biome(float x, float z, int want, float d) {
-    for (int k = 0; k < 6; k++) {
-        float a = (float)k * 1.0472f;
-        float px = x + cosf(a) * d, pz = z + sinf(a) * d;
-        float h = surface_height(px, pz);
-        if (h < 0.0f) continue;
-        float slope = 1.0f - 1.0f / sqrtf(1.0f + 0.25f);   /* ~0.11: flat enough */
-        (void)slope;
-        if (biome_id(px, pz, h, 0.05f, 0.5f) == want) return 1;
-    }
-    return 0;
-}
-
-/* A site is only planted where a person would plant one: fresh water, ground
-   that grows something, wood nearby, and something to put your back against.
-   The score is the site's whole fate -- capacity, fertility and unrest all come
-   from here, so a badly placed town is a real problem for its polity. */
 static void place_sites(void) {
-    static struct { int xi, zi; float score, fert; int biome, riv, lak, forest, ore; }
-        cand[4000];
+    static struct { int gi; float score, fert; } cand[GEO_N * GEO_N];
     int ncand = 0;
-    for (int zi = 24; zi < N - 24 && ncand < 4000; zi += SIM_CAND_STEP) {
-        for (int xi = 24; xi < N - 24 && ncand < 4000; xi += SIM_CAND_STEP) {
-            float x = (xi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
-            float z = (zi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
-            float h = sample_height(x, z);
-            if (h < 8.0f || h > 1400.0f) continue;   /* drowned or above the tree line */
-            float dhx = (sample_height(x + CELL, z) - sample_height(x - CELL, z)) / (2.0f * CELL);
-            float dhz = (sample_height(x, z + CELL) - sample_height(x, z - CELL)) / (2.0f * CELL);
-            float slope = 1.0f - 1.0f / sqrtf(1.0f + dhx * dhx + dhz * dhz);
-            if (slope > 0.22f) continue;             /* a cliff is not a town */
-            float lat = zi / (float)(N - 1);
-            int biome = biome_id(x, z, h, slope, lat);
-            if (biome == BIOME_ROCK || biome == BIOME_SNOW || biome == BIOME_SAND) continue;
 
-            float rq = river_query(x, z, NULL, NULL, NULL, NULL);
-            int riv = rq < 300.0f;
-            int lak = lake_at(x, z) || lake_at(x + 220.0f, z) || lake_at(x - 220.0f, z) ||
-                      lake_at(x, z + 220.0f) || lake_at(x, z - 220.0f);
-            int forest = near_biome(x, z, BIOME_FOREST, 300.0f);
-            int ore = near_biome(x, z, BIOME_ROCK, 420.0f);
-            float relief = site_relief(x, z);
+    for (int gi = 0; gi < GEO_N * GEO_N; gi++) {
+        geo_cell_t *g = &geo[gi];
+        if (g->h < 8.0f || g->h > 1400.0f) continue;      /* drowned or above the trees */
+        if (g->biome == BIOME_ROCK || g->biome == BIOME_SNOW ||
+            g->biome == BIOME_SAND || g->biome == BIOME_SEA) continue;
+        if (g->slope > 0.32f) continue;                   /* a cliff is not a town */
 
-            float fert = (biome == BIOME_GRASS) ? 1.0f
-                       : (biome == BIOME_FOREST) ? 0.72f
-                       : (biome == BIOME_STEPPE) ? 0.45f : 0.40f;
-            fert *= 1.0f - slope * 2.0f;
-            float score = fert * 2.0f + (riv ? 1.6f : 0.0f) + (lak ? 0.8f : 0.0f)
-                        + (forest ? 0.7f : 0.0f) + (ore ? 0.6f : 0.0f)
-                        + fminf(relief / 600.0f, 1.0f) * 0.5f;
-            if (score < 2.2f) continue;
-            cand[ncand].xi = xi; cand[ncand].zi = zi;
-            cand[ncand].score = score; cand[ncand].fert = fert;
-            cand[ncand].biome = biome; cand[ncand].riv = riv; cand[ncand].lak = lak;
-            cand[ncand].forest = forest; cand[ncand].ore = ore;
-            ncand++;
-        }
+        int gx = gi % GEO_N, gz = gi / GEO_N;
+        int rock = 0, forest = 0;
+        for (int dz = -1; dz <= 1; dz++)
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = gx + dx, nz = gz + dz;
+                if (nx < 0 || nz < 0 || nx >= GEO_N || nz >= GEO_N) continue;
+                int b = geo[nz * GEO_N + nx].biome;
+                if (b == BIOME_ROCK) rock = 1;
+                if (b == BIOME_FOREST) forest = 1;
+            }
+
+        float fert = (g->biome == BIOME_GRASS) ? 1.0f
+                   : (g->biome == BIOME_FOREST) ? 0.72f
+                   : (g->biome == BIOME_STEPPE) ? 0.45f : 0.40f;
+        fert *= 1.0f - g->slope * 1.5f;
+        if (fert < 0.0f) fert = 0.0f;
+
+        int harbour = g->sea_d < 420.0f && g->h < 140.0f;
+        float score = fert * 2.0f
+                    + (g->river_d < 320.0f ? 1.6f : 0.0f)
+                    + (harbour ? 0.9f : 0.0f)
+                    + (forest ? 0.7f : 0.0f)
+                    + (rock ? 0.6f : 0.0f)
+                    + (g->pass ? 0.8f : 0.0f)
+                    + fminf(g->pass_height / 400.0f, 1.0f) * 0.5f
+                    + fminf(g->moist, 1.0f) * 0.4f;
+        if (score < 2.2f) continue;
+        cand[ncand].gi = gi;
+        cand[ncand].score = score;
+        cand[ncand].fert = fert;
+        ncand++;
     }
 
-    /* greedy by score with a spacing floor: dense clusters of good cells are
-       one town, not six */
+    /* greedy by score with a spacing floor: a cluster of good cells is one town */
     for (int i = 0; i < ncand; i++)
         for (int j = i + 1; j < ncand; j++)
             if (cand[j].score > cand[i].score) {
@@ -154,8 +135,10 @@ static void place_sites(void) {
 
     S.nsites = 0;
     for (int i = 0; i < ncand && S.nsites < SIM_MAX_SITES; i++) {
-        float x = (cand[i].xi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
-        float z = (cand[i].zi / (float)(N - 1)) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+        geo_cell_t *g = &geo[cand[i].gi];
+        int gx = cand[i].gi % GEO_N, gz = cand[i].gi / GEO_N;
+        float x = ((gx + 0.5f) / GEO_N) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+        float z = ((gz + 0.5f) / GEO_N) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
         int too_close = 0;
         for (int k = 0; k < S.nsites; k++) {
             float dx = S.site[k].x - x, dz = S.site[k].z - z;
@@ -164,18 +147,16 @@ static void place_sites(void) {
         if (too_close) continue;
         sim_site_t *s = &S.site[S.nsites];
         memset(s, 0, sizeof *s);
-        s->x = x; s->z = z; s->h = sample_height(x, z);
-        s->biome = cand[i].biome;
+        s->x = x; s->z = z; s->h = g->h;
+        s->biome = g->biome;
         s->fertility = cand[i].fert;
-        s->forest_near = cand[i].forest;
-        s->ore_near = cand[i].ore;
-        s->coastal = s->h < 90.0f;
-        s->def = fminf(site_relief(x, z) / 600.0f, 1.0f);
-        s->ore = cand[i].ore ? (0.35f + 0.65f * cand[i].fert) : 0.10f;
-        /* food from the land, work from the water, and a roof worth having */
+        s->forest_near = g->biome == BIOME_FOREST;
+        s->coastal = g->sea_d < 420.0f;
+        s->def = fminf((g->pass ? 0.5f : 0.0f) + g->pass_height / 600.0f, 1.0f);
+        s->ore = rock_near_ore(g) ? 0.6f : 0.15f;
         s->capacity = 300.0f + 2400.0f * s->fertility
-                    + (cand[i].riv ? 700.0f : 0.0f)
-                    + (cand[i].lak ? 350.0f : 0.0f);
+                    + (g->river_d < 320.0f ? 700.0f : 0.0f)
+                    + (s->coastal ? 350.0f : 0.0f);
         if (s->capacity > SIM_POP_MAX) s->capacity = SIM_POP_MAX;
         s->pop = 180.0f + 0.22f * s->capacity;
         s->food = 0.5f * s->pop;
@@ -295,7 +276,7 @@ static void chronicle(const char *fmt, ...) {
 static void tick_food(float weather) {
     for (int i = 0; i < S.nsites; i++) {
         sim_site_t *s = &S.site[i];
-        float prod = s->pop * (0.62f + 0.72f * s->fertility) * weather;
+        float prod = s->pop * (0.85f + 0.50f * s->fertility) * weather;
         float need = s->pop;
         float bal = s->food + prod - need;
         if (bal >= 0.0f) {

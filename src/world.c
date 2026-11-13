@@ -827,6 +827,39 @@ int lake_at(float x, float z) {
    and trunks cut valleys -- the widening-downstream property, without a drop
    of simulated water. Relief caps it: on a plain a river cannot cut 300 units
    into ground that is only 20 units above the sea. */
+/* Two-pass 3x3 chamfer distance transform, carrying the nearest source's
+   payload (`clevel`) along. Used for river distance and for sea distance: it is
+   within a few percent of Euclidean, which is all either of them needs. */
+static void chamfer_2d(float *cdist, float *clevel, int cn) {
+    for (int pass = 0; pass < 2; pass++) {
+        int zstart = pass ? cn - 1 : 0, zend = pass ? -1 : cn, zstep = pass ? -1 : 1;
+        for (int cz = zstart; cz != zend; cz += zstep) {
+            int xstart = pass ? cn - 1 : 0, xend = pass ? -1 : cn, xstep = pass ? -1 : 1;
+            for (int cx = xstart; cx != xend; cx += xstep) {
+                int c = cz * cn + cx;
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (!dx && !dz) continue;
+                        int nx = cx + dx, nz = cz + dz;
+                        if (nx < 0 || nz < 0 || nx >= cn || nz >= cn) continue;
+                        int n = nz * cn + nx;
+                        float step = (dx && dz) ? 1.4142f : 1.0f;
+                        if (cdist[n] + step < cdist[c]) {
+                            cdist[c] = cdist[n] + step;
+                            if (clevel) clevel[c] = clevel[n];
+                        }
+                    }
+            }
+        }
+    }
+}
+
+/* The river distance field, coarse (VC cells per coarse cell) and kept because
+   the geography and the sim ask where the water is, not just the carver. */
+enum { RIV_VC = 16 };
+static float riv_dist[(N / 16 + 2) * (N / 16 + 2)];
+static float riv_level[(N / 16 + 2) * (N / 16 + 2)];
+
 void carve_valleys(void) {
     if (!seg_n) return;
 
@@ -836,10 +869,9 @@ void carve_valleys(void) {
        a coarse grid and run a two-pass chamfer distance transform (with the
        nearest river's water level carried along in the same pass). ~74 units
        per cell, bilinear when sampled, which keeps the profile smooth. */
-    enum { VC = 16 };
+    enum { VC = RIV_VC };
     int cn = N / VC + 1;
-    static float cdist[(N / 16 + 2) * (N / 16 + 2)];
-    static float clevel[(N / 16 + 2) * (N / 16 + 2)];
+    float *cdist = riv_dist, *clevel = riv_level;
     static float cmax[(N / 16 + 2) * (N / 16 + 2)];
     for (int i = 0; i < cn * cn; i++) { cdist[i] = 1e6f; clevel[i] = 0.0f; cmax[i] = -1e30f; }
 
@@ -870,30 +902,7 @@ void carve_valleys(void) {
         }
     }
 
-    /* chamfer, forward then backward: distance in coarse cells plus the water
-       level of whichever river is nearest. 3x3 min-plus, twice -- cheap and
-       within a few percent of euclidean, which is all a valley profile needs */
-    for (int pass = 0; pass < 2; pass++) {
-        int zstart = pass ? cn - 1 : 0, zend = pass ? -1 : cn, zstep = pass ? -1 : 1;
-        for (int cz = zstart; cz != zend; cz += zstep) {
-            int xstart = pass ? cn - 1 : 0, xend = pass ? -1 : cn, xstep = pass ? -1 : 1;
-            for (int cx = xstart; cx != xend; cx += xstep) {
-                int c = cz * cn + cx;
-                for (int dz = -1; dz <= 1; dz++)
-                    for (int dx = -1; dx <= 1; dx++) {
-                        if (!dx && !dz) continue;
-                        int nx = cx + dx, nz = cz + dz;
-                        if (nx < 0 || nz < 0 || nx >= cn || nz >= cn) continue;
-                        int n = nz * cn + nx;
-                        float step = (dx && dz) ? 1.4142f : 1.0f;
-                        if (cdist[n] + step < cdist[c]) {
-                            cdist[c] = cdist[n] + step;
-                            clevel[c] = clevel[n];
-                        }
-                    }
-            }
-        }
-    }
+    chamfer_2d(cdist, clevel, cn);
 
     for (int zi = 0; zi < N; zi++) {
         for (int xi = 0; xi < N; xi++) {
@@ -1743,16 +1752,29 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         r *= j; g *= j; b *= j;
 
         float fx2 = 0.0f, fz2 = 0.0f, rx = 0.0f, rz = 0.0f;
-        float rhw = RIVER_HW_MIN;
+        float rhw = RIVER_HW_MIN, river_lvl = 0.0f;
         /* the lake wins where the two overlap: a river mouth is still water,
            and painting it as a river put its moving ripple band on top of the
            lake as a bright dashed stripe */
         int is_lake = lake_at(cxw, czw);
         if (!is_lake && river_bed_ok(cxw, czw)
-            && river_query(cxw, czw, NULL, &rx, &rz, &rhw) < rhw) {
+            && river_query(cxw, czw, &river_lvl, &rx, &rz, &rhw) < rhw) {
             fx2 = rx; fz2 = rz;
             float wj = 1.0f + (j - 1.0f) * 0.5f;
             r = WATER_COL[0]*wj; g = WATER_COL[1]*wj; b = WATER_COL[2]*wj;
+            /* A waterfall is a river whose surface drops between here and two
+               cells downstream. There is no foam simulation and no spray
+               geometry: white facets on a steep reach read as falling water and
+               cost one extra query on the few cells that qualify. It matters
+               beyond looks -- the sim wants to know where the chokepoints are,
+               and a fall is the best one a river offers. */
+            float dn_lvl = river_lvl;
+            if (river_query(cxw + rx * 2.0f * CELL, czw + rz * 2.0f * CELL,
+                            &dn_lvl, NULL, NULL, NULL) < 40.0f
+                && river_lvl - dn_lvl > 14.0f) {
+                r = 0.80f; g = 0.86f; b = 0.90f;
+                fx2 *= 2.4f; fz2 *= 2.4f;      /* faster ripple: it is falling */
+            }
         } else if (is_lake) {
             /* length 2 marks a lake: still water to the shader (which keys on
                a non-zero flow), but a fixed unit direction on a big lake draws
@@ -1933,25 +1955,83 @@ void bake_ambient(void) {
 /* Which kind of ground this is. The sim asks this (fertility, timber, harbours)
    and the colours come from the answer, so "the good farmland" the bots see is
    the green the player sees. */
-int biome_id(float x, float z, float h, float slope, float lat) {
-    unsigned seed = terrain_seed;
-    if (h < 0.0f) return BIOME_SEA;
-    if (h < 3.0f) return BIOME_SAND;
-    if (h > snow_line_at(lat)) return BIOME_SNOW;
-    if (slope > 0.34f || terrain_mountain_mask(x, z, seed) > 0.78f) return BIOME_ROCK;
+static float ss01(float a, float b, float x) {
+    if (x <= a) return 0.0f;
+    if (x >= b) return 1.0f;
+    float t = (x - a) / (b - a);
+    return t * t * (3.0f - 2.0f * t);
+}
 
-    /* moisture: coast wet, interior dry, lee of a ridge dry */
+/* Moisture: the one number that decides steppe vs meadow vs forest. Kept in
+   its own function because the colour bake *blends* between the three while the
+   sim *classifies* -- and both have to agree on how wet a place is.
+
+   Three terms, all geography rather than decoration:
+   - distance from the coast (interior is drier)
+   - rain shadow, from marching upwind (west) and looking for a ridge
+   - aspect: a north-facing slope (ground rising toward the south) is colder and
+     holds its water, a south-facing one dries out
+   plus a little noise so no band is a clean line. */
+float biome_moisture(float x, float z, float h, float lat) {
+    unsigned seed = terrain_seed;
     float cont = terrain_continent(x, z, seed);
     float interior = (cont - world_sea) / 0.40f;
     if (interior < 0.0f) interior = 0.0f;
     if (interior > 1.0f) interior = 1.0f;
-    float upwind = surface_height(x - 700.0f, z);
-    float lee = (upwind - h - 120.0f) / 450.0f;
+
+    /* the wind comes from the west, so walk into it: a ridge 900 units upwind
+       shadows just as much as one 200 units upwind, and a single probe only
+       ever saw the nearest slope */
+    float lee = 0.0f;
+    float da[3] = { 250.0f, 600.0f, 1000.0f };
+    for (int k = 0; k < 3; k++) {
+        float up = surface_height(x - da[k], z);
+        float sh = (up - h - 90.0f) / 520.0f;
+        if (sh > lee) lee = sh;                 /* the tallest thing in the way */
+    }
     if (lee < 0.0f) lee = 0.0f;
     if (lee > 1.0f) lee = 1.0f;
-    float moist = 1.05f - 0.55f * interior - 0.75f * lee
-                + 0.45f * (terrain_value_noise(x * 0.012f, z * 0.012f, seed + 41u) - 0.5f)
-                + 0.10f * (1.0f - fabsf(lat - 0.5f) * 2.0f);
+
+    /* aspect, as the downslope direction */
+    float gx = surface_height(x + CELL, z) - surface_height(x - CELL, z);
+    float gz = surface_height(x, z + CELL) - surface_height(x, z - CELL);
+    float gm = sqrtf(gx * gx + gz * gz);
+    float north = gm > 1e-3f ? (gz / gm) * 0.5f + 0.5f : 0.5f;   /* 1 = faces north */
+
+    return 1.05f - 0.55f * interior - 0.75f * lee
+         + 0.18f * (north - 0.5f)
+         + 0.45f * (terrain_value_noise(x * 0.012f, z * 0.012f, seed + 41u) - 0.5f)
+         + 0.10f * (1.0f - fabsf(lat - 0.5f) * 2.0f);
+}
+
+/* Exposure: how open a coastal cell is to the weather that comes off the sea.
+   The wind is from the west, so a west-facing shore takes the swell and a
+   sheltered one can hold sand. Returns 0 for open coast, 1 for shelter. */
+float biome_shelter(float x, float z) {
+    /* sample the sea out to the west: coast is sheltered when something stands
+       between it and the open water */
+    float blocked = 0.0f;
+    float dist[3] = { 300.0f, 700.0f, 1200.0f };
+    for (int k = 0; k < 3; k++) {
+        float hs = surface_height(x - dist[k], z);
+        if (hs < 0.0f) continue;                /* open sea: no shelter */
+        blocked += 0.33f;
+    }
+    return blocked > 1.0f ? 1.0f : blocked;
+}
+
+int biome_id(float x, float z, float h, float slope, float lat) {
+    unsigned seed = terrain_seed;
+    if (h < 0.0f) return BIOME_SEA;
+    if (h < 3.0f) {
+        /* sand only where the sea can lay it down: a west-facing shore is
+           under the swell and stays rock, a sheltered bay fills with sand */
+        return biome_shelter(x, z) > 0.45f ? BIOME_SAND : BIOME_ROCK;
+    }
+    if (h > snow_line_at(lat)) return BIOME_SNOW;
+    if (slope > 0.34f || terrain_mountain_mask(x, z, seed) > 0.78f) return BIOME_ROCK;
+
+    float moist = biome_moisture(x, z, h, lat);
     if (moist < 0.26f) return BIOME_STEPPE;
     if (moist > 0.66f) return BIOME_FOREST;
     if (terrain_value_noise(x * 0.075f, z * 0.075f, seed + 9u) > 0.55f) return BIOME_DIRT;
@@ -1974,15 +2054,25 @@ void biome_rgb(float x, float z, float h, float slope, float lat, float *out) {
     case BIOME_SAND:   r = 0.63f; g = 0.57f; b = 0.41f; break;
     case BIOME_SNOW:   r = 0.90f; g = 0.86f; b = 0.79f; break;
     case BIOME_ROCK:   r = 0.46f; g = 0.31f; b = 0.17f; break;
-    case BIOME_STEPPE: r = 0.52f; g = 0.46f; b = 0.30f; break;
-    case BIOME_FOREST: r = 0.24f; g = 0.31f; b = 0.15f; break;
     case BIOME_DIRT:   r = 0.27f; g = 0.18f; b = 0.08f; break;
     default: {
+        /* Steppe, meadow and forest blend by moisture instead of switching at a
+           threshold: hard bands read as a paint-by-numbers map from above and
+           as a stripe from the ground. The classifications above still decide
+           what the *sim* calls this place; only the colour is continuous. */
         unsigned seed = terrain_seed;
+        float m = biome_moisture(x, z, h, lat);
+        float ws = 1.0f - ss01(0.18f, 0.34f, m);       /* steppe weight */
+        float wf = ss01(0.58f, 0.76f, m);              /* forest weight */
+        float wg = 1.0f - ws - wf;
+        if (wg < 0.0f) wg = 0.0f;
         float patch = 0.5f + 0.5f * terrain_value_noise(x * 0.022f, z * 0.022f, seed + 5u);
-        r = 0.30f + 0.05f * patch;
-        g = 0.355f + 0.045f * patch;
-        b = 0.14f + 0.04f * (1.0f - patch);
+        float gr = 0.30f + 0.05f * patch;
+        float gg = 0.355f + 0.045f * patch;
+        float gb = 0.14f + 0.04f * (1.0f - patch);
+        r = ws * 0.52f + wg * gr + wf * 0.24f;
+        g = ws * 0.46f + wg * gg + wf * 0.31f;
+        b = ws * 0.30f + wg * gb + wf * 0.15f;
         float cold = 1.0f - fabsf(lat - 0.5f) * 2.0f;
         float warm = cold - 0.75f;
         r += 0.05f * warm;
@@ -2232,6 +2322,7 @@ void build_world_data(unsigned seed) {
     /* trees before anything that marches the horizon: a crown is an occluder */
     place_trees(seed);
     build_tree_index();
+    build_geography();
     world_stats();
 }
 
@@ -2239,6 +2330,96 @@ void build_world_data(unsigned seed) {
    how many landmasses are big enough to matter, and the relief the player can
    actually climb. Computed once after the field is final, so the sweep and the
    map tool report the same thing (they used to compute it separately). */
+geo_cell_t geo[GEO_N * GEO_N];
+
+/* ---------------------------------------------------------------- geography
+   The sim's view of the terrain, at 275 units per cell: 64x64 cells for the
+   whole world, one sample per place a settlement could plausibly care about.
+
+   This is the honest version of "the sim depends on the coarse field, never the
+   fine terrain" (PLAN rule 4). Before this, `sim.c` asked `sample_height()` and
+   `river_query()` per candidate site, which works at 1184^2 and would be the
+   first thing to break at 2368^2. Everything the sim scores a site by -- height,
+   slope, moisture, biome, distance to water, distance to the sea, whether a
+   pass runs through here -- is computed once, here, and then costs nothing. */
+void build_geography(void) {
+    for (int gz = 0; gz < GEO_N; gz++) {
+        for (int gx = 0; gx < GEO_N; gx++) {
+            float x = ((gx + 0.5f) / GEO_N) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+            float z = ((gz + 0.5f) / GEO_N) * TERRAIN_WORLD - TERRAIN_WORLD * 0.5f;
+            geo_cell_t *g = &geo[gz * GEO_N + gx];
+            memset(g, 0, sizeof *g);
+            g->h = surface_height(x, z);
+            float dhx = (surface_height(x + CELL * 2, z) - surface_height(x - CELL * 2, z)) / (4.0f * CELL);
+            float dhz = (surface_height(x, z + CELL * 2) - surface_height(x, z - CELL * 2)) / (4.0f * CELL);
+            g->slope = sqrtf(dhx * dhx + dhz * dhz);
+            float lat = (z + TERRAIN_WORLD * 0.5f) / TERRAIN_WORLD;
+            g->moist = biome_moisture(x, z, g->h, lat);
+            g->biome = biome_id(x, z, g->h, 1.0f - 1.0f / sqrtf(1.0f + g->slope * g->slope), lat);
+            /* river distance from the coarse field the valley carver built */
+            int cn = N / RIV_VC + 1;
+            int cx = (int)((x + TERRAIN_WORLD * 0.5f) / CELL) / RIV_VC;
+            int cz = (int)((z + TERRAIN_WORLD * 0.5f) / CELL) / RIV_VC;
+            if (cx < 0) cx = 0; if (cx >= cn) cx = cn - 1;
+            if (cz < 0) cz = 0; if (cz >= cn) cz = cn - 1;
+            g->river_d = riv_dist[cz * cn + cx] * RIV_VC * CELL;
+        }
+    }
+
+    /* distance to the sea, and passes: a pass is a saddle -- lower than the
+       ground either side of it along one axis, higher along the other. That is
+       the whole definition and it is enough for the sim to prefer a town that
+       sits on a crossing. */
+    static float sea_dist[GEO_N * GEO_N];
+    static float sea_lvl[GEO_N * GEO_N];
+    for (int i = 0; i < GEO_N * GEO_N; i++) {
+        sea_dist[i] = geo[i].h < 0.0f ? 0.0f : 1e6f;
+        sea_lvl[i] = 0.0f;
+    }
+    chamfer_2d(sea_dist, sea_lvl, GEO_N);
+    for (int i = 0; i < GEO_N * GEO_N; i++)
+        geo[i].sea_d = sea_dist[i] * (TERRAIN_WORLD / GEO_N);
+
+    for (int gz = 1; gz + 1 < GEO_N; gz++) {
+        for (int gx = 1; gx + 1 < GEO_N; gx++) {
+            int i = gz * GEO_N + gx;
+            float h = geo[i].h;
+            float hl = geo[i - 1].h, hr = geo[i + 1].h;
+            float hu = geo[i - GEO_N].h, hd = geo[i + GEO_N].h;
+            /* a gap: the ground rises on both sides along one axis. It does
+               not also have to be higher along the other -- a col is often the
+               lowest way through and that is exactly why a road uses it */
+            const float t = 30.0f;
+            int we = (hl > h + t && hr > h + t);
+            int ns = (hu > h + t && hd > h + t);
+            /* a saddle is a pass only if it is high ground (in the hills, not
+               on a hillock) and the shoulders either side actually stand above
+               it -- without both tests a 64x64 grid of noise reports hundreds */
+            float shoulder = we ? fminf(hl, hr) : fminf(hu, hd);
+            float drop = fmaxf(shoulder - h, 0.0f);
+            geo[i].pass = ((we || ns) && h > 0.28f * peak_y) ? 1 : 0;
+            geo[i].pass_height = geo[i].pass ? drop : 0.0f;
+        }
+    }
+}
+
+/* How many passes this world has: a choke point count, and the number the map
+   tool prints so a change in range shape shows up as a number. */
+int pass_count(void) {
+    int n = 0;
+    for (int i = 0; i < GEO_N * GEO_N; i++) if (geo[i].pass) n++;
+    return n;
+}
+
+int geo_at(float x, float z, geo_cell_t *out) {
+    int gx = (int)(((x + TERRAIN_WORLD * 0.5f) / TERRAIN_WORLD) * GEO_N);
+    int gz = (int)(((z + TERRAIN_WORLD * 0.5f) / TERRAIN_WORLD) * GEO_N);
+    if (gx < 0) gx = 0; if (gx >= GEO_N) gx = GEO_N - 1;
+    if (gz < 0) gz = 0; if (gz >= GEO_N) gz = GEO_N - 1;
+    *out = geo[gz * GEO_N + gx];
+    return 1;
+}
+
 void world_stats(void) {
     static unsigned char seen[N * N];
     static int stack[N * N];

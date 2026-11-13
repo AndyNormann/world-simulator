@@ -311,6 +311,15 @@ GV(const char *replay_name,"replay")
 #undef G
 #undef GV
 
+/* The coarse geography grid (see build_geography in world.c): the sim's only
+   view of the terrain, one sample per 275 units. */
+#define GEO_N 64
+typedef struct {
+    float h, slope, moist, river_d, sea_d, pass_height;
+    int biome, pass;
+} geo_cell_t;
+extern geo_cell_t geo[GEO_N * GEO_N];
+
 /* --- functions -----------------------------------------------------*/
 int chunk_state(const chunk_t *c);
 void chunk_set_state(chunk_t *c, int state);
@@ -367,6 +376,8 @@ void bake_ambient(void);
 enum { BIOME_SEA, BIOME_SAND, BIOME_SNOW, BIOME_ROCK, BIOME_STEPPE,
        BIOME_FOREST, BIOME_DIRT, BIOME_GRASS };
 int biome_id(float x, float z, float h, float slope, float lat);
+float biome_moisture(float x, float z, float h, float lat);
+float biome_shelter(float x, float z);
 float snow_line_at(float lat);
 void biome_rgb(float x, float z, float h, float slope, float lat, float *out);
 void bake_colours(unsigned seed);
@@ -379,6 +390,9 @@ int world_ready(void);
 void chunks_update(void);
 void game_logger(const char *tag, uint32_t level, uint32_t item, const char *msg, uint32_t line, const char *file, void *ud);
 void pick_sea_level(unsigned seed);
+void build_geography(void);
+int geo_at(float x, float z, geo_cell_t *out);
+int pass_count(void);
 void world_stats(void);
 void build_world_data(unsigned seed);
 void build_terrain(unsigned seed);
