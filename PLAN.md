@@ -302,6 +302,32 @@ Two fixes:
 Measured by `--flicker`'s `rebuild` column, which forces every chunk to rebuild:
 100 % of pixels changed before, 3–5 % after.
 
+### Water and rocks (found by walking around)
+
+Three unrelated-looking reports, three separate causes:
+
+- **"Water under the trees."** Two things. Rivers were painted per *facet
+  centroid*, and a channel is barely one facet wide on a steep reach, so a river
+  came out as a scatter of teal confetti with gaps, flooding single facets up to
+  a cell past the mask. The paint now takes the most-inside of a facet's three
+  corners (from a per-*vertex* river sample, so it is cheaper than the
+  centre-only test was), which makes the ribbon continuous. And trees were only
+  kept one cell clear of a lake while the painted edge reaches ~0.7 cell past the
+  mask, so a tree could stand on a painted facet in the shallows; the margin is
+  two cells, measured against a real tree standing in a real lake.
+- **"Flickering pieces of geometry."** Black quadrilaterals on sunlit cliffs
+  were `TREE_ROCK` boulders emitted with `emit_tri(..., 0.12f)`, and that last
+  argument *multiplies* the colour -- every boulder in the world was drawn at 12 %
+  brightness. Now 0.92-1.08 like every other caller, and buried a third of their
+  height deeper so a base ring that spans twenty units of slope does not show
+  air under one side.
+- **The chunk build got 4x slower for an afternoon.** Doing four river queries
+  per facet to get the "most inside corner" pushed chunk builds past the point
+  where the streamer could keep up -- the flicker `rebuild` column jumped to
+  16 % and the golden images stopped being reproducible, which looked like a
+  brand-new race. Sampling the river once per *vertex* fixed both. The `rebuild`
+  number is also a health check on the streamer, not just on the mesh swap.
+
 ### The disappearing edge (found after the town work)
 
 Reported as "terrain clips out early when I move the camera, so when it becomes

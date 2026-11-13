@@ -210,6 +210,15 @@ Rules for the analysis step:
   different camera than an idle one and the same replay produces two images.
 - **Fixed 60 Hz.** `frame()` accumulates real time and runs N × `sim_step(1/60)`
   (N ≤ 5). A replay is therefore the same motion you see when playing.
+- **`emit_tri`'s last argument is a brightness multiplier**, not a variation
+  factor. Passing `0.12f` there painted every boulder in the world at 12 % and
+  the bug survived months because a black rock on a dark slope looks plausible.
+  Every caller that wants "a bit of per-facet variation" uses ~0.9-1.1.
+- **Per-facet decisions need per-vertex inputs.** Anything that decides a
+  facet's appearance from a single sample (river water, lake water) has to
+  sample at *every* corner, or the result is a scatter of isolated facets with
+  gaps: a channel is often narrower than one triangle. Sample once per vertex,
+  cost included, and let the facet take the extreme.
 - **A town is one array of footprints** (`blds` in `src/world.c`, filled by
   `place_settlement`). Placement, drawing and collision all read it and nothing
   derives a second copy: a house you can see and a house you cannot walk through

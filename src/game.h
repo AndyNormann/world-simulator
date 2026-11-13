@@ -252,6 +252,9 @@ GV(const float ACACIA_COL[3],{ 0.400f, 0.480f, 0.130f })
 GV(const float TRUNK_COL[3],{ 0.330f, 0.225f, 0.130f })
 GV(int tree_detail,0) /* 0 = full geometry, 1 = one cone */
 G(float pts_x[MAX_PTS + 3], pts_z[MAX_PTS + 3])
+/* per-chunk-point river sample: distance past the half-width, and the level
+   and direction the water paint takes when this point is the most inside */
+G(float pt_riv[MAX_PTS + 3], pt_lvl[MAX_PTS + 3], pt_fx[MAX_PTS + 3], pt_fz[MAX_PTS + 3])
 G(float hor_pt[MAX_PTS + 3][SUN_SECTORS])
 G(float bnc_pt[MAX_PTS + 3][SUN_SECTORS * 3])
 GV(int npts,0)

@@ -1120,12 +1120,18 @@ int river_bed_ok(float x, float z) {
 }
 
 int near_water(float x, float z) {
+    /* The margin has to cover the *painted* water, not the mask it is painted
+       from. A river facet is now painted when any of its points is in the
+       channel, so the visible river reaches half a facet past the centreline
+       test -- two cells of margin. A lake is painted by its centroid, so the
+       painted edge reaches ~0.7 cell past the mask and a tree one cell out can
+       still stand on a painted facet: a tree in the shallows, which is exactly
+       the report. Two cells it is. */
     float hw = RIVER_HW_MIN;
-    if (river_query(x, z, NULL, NULL, NULL, &hw) < hw + 18.0f) return 1;
-    static const float DX[9] = { 0, 1, -1, 0, 0, 1, 1, -1, -1 };
-    static const float DZ[9] = { 0, 0, 0, 1, -1, 1, -1, 1, -1 };
-    for (int k = 0; k < 9; k++)
-        if (lake_at(x + DX[k] * CELL, z + DZ[k] * CELL)) return 1;
+    if (river_query(x, z, NULL, NULL, NULL, &hw) < hw + 2.0f * CELL) return 1;
+    for (int dz = -2; dz <= 2; dz++)
+        for (int dx = -2; dx <= 2; dx++)
+            if (lake_at(x + dx * CELL, z + dz * CELL)) return 1;
     return 0;
 }
 
@@ -1343,7 +1349,9 @@ void emit_blob(const tree_t *t, float cx, float cy, float cz,
 void emit_rock(const tree_t *t) {
     unsigned h = t->hash;
     float r = t->r, ht = t->h;
-    float by = t->y - 0.25f * ht;
+    /* Buried nearly half its height: on a cliff a boulder's base ring spans
+       twenty units of slope, so a shallow setting shows air under one side. */
+    float by = t->y - 0.40f * ht;
     float tint = 0.82f + 0.30f * ((h >> 3) & 255u) / 255.0f;
     float col[3] = { 0.44f * tint, 0.32f * tint, 0.20f * tint };
     float top[3] = { col[0] * 1.18f, col[1] * 1.18f, col[2] * 1.12f };
@@ -1364,7 +1372,10 @@ void emit_rock(const tree_t *t) {
         int k2 = (k + 1) & 3;
         float p0[3] = { base[k][0], base[k][1], base[k][2] };
         float p1[3] = { base[k2][0], base[k2][1], base[k2][2] };
-        emit_tri(p0, apex, p1, apex, k & 1 ? col : top, 0.12f);
+        /* The last argument multiplies the colour: 0.12 painted every boulder
+           at 12% brightness, i.e. black holes on a sunlit cliff. */
+        float j = 0.92f + 0.16f * facet_hash((int)(h & 4095u) + k);
+        emit_tri(p0, apex, p1, apex, k & 1 ? col : top, j);
     }
 }
 
@@ -1858,6 +1869,15 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     }
     if (ntri < 8) return 0;
 
+    /* One river query per vertex, not per facet: the water paint wants the
+       minimum over a facet's three corners, and doing that inline cost four
+       queries per triangle and made chunk builds slow enough to see. */
+    for (int p = 0; p < npts; p++) {
+        float lv = 0.0f, fxq = 0.0f, fzq = 0.0f, hwq = RIVER_HW_MIN;
+        pt_riv[p] = river_query(pts_x[p], pts_z[p], &lv, &fxq, &fzq, &hwq) - hwq;
+        pt_lvl[p] = lv; pt_fx[p] = fxq; pt_fz[p] = fzq;
+    }
+
     /* --- one colour per facet ------------------------------------------- */
     float top = -1e9f, bot = 1e9f;
     for (int k = 0; k < ndt; k++) {
@@ -1897,13 +1917,25 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         r *= j; g *= j; b *= j;
 
         float fx2 = 0.0f, fz2 = 0.0f, rx = 0.0f, rz = 0.0f;
-        float rhw = RIVER_HW_MIN, river_lvl = 0.0f;
+        float river_lvl = 0.0f;
         /* the lake wins where the two overlap: a river mouth is still water,
            and painting it as a river put its moving ripple band on top of the
            lake as a bright dashed stripe */
         int is_lake = lake_at(cxw, czw);
-        if (!is_lake && river_bed_ok(cxw, czw)
-            && river_query(cxw, czw, &river_lvl, &rx, &rz, &rhw) < rhw) {
+        /* Painted by the *whole* facet, not by its centre: a channel is barely
+           one facet wide on a steep reach, so a centre-only test left the river
+           as a scatter of teal confetti with gaps between the patches. The
+           most-inside vertex decides, from the per-point river distance
+           computed once above -- four queries per facet made the chunk build
+           slow enough to be visible as streaming. */
+        int qi = -1;
+        float inside = 1e18f;
+        for (int q = 0; q < 3; q++) {
+            int p = dt[k].v[q];
+            if (pt_riv[p] < inside) { inside = pt_riv[p]; qi = p; }
+        }
+        if (qi >= 0) { river_lvl = pt_lvl[qi]; rx = pt_fx[qi]; rz = pt_fz[qi]; }
+        if (!is_lake && inside < 0.0f && river_bed_ok(cxw, czw)) {
             fx2 = rx; fz2 = rz;
             float wj = 1.0f + (j - 1.0f) * 0.5f;
             r = WATER_COL[0]*wj; g = WATER_COL[1]*wj; b = WATER_COL[2]*wj;
