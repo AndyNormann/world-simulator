@@ -449,6 +449,57 @@ that make dusk look like dusk (the dusk golden moved by 0.17 %), but a lone tree
 no longer throws a 50-unit slab across an open meadow. Walk instability at the
 reported camera went 7.73 % -> 6.87 %.
 
+### Water is not the bed (found on a lake, from a screenshot)
+
+Three separate faults, all the same mistake: the water *surface* was painted on
+the terrain mesh and lit as if it were the terrain.
+
+- **The bed's facets lit the water.** Lakes are flattened by the hydrology, but
+  the river channel is cut into the same mesh either side of them, so
+  neighbouring water facets have normals tens of degrees apart. A dark stripe ran
+  the length of the lake, exactly along the carve. Water now uses `n = (0,1,0)`
+  in the shader: the surface is flat, the bed is not, and the bed has no say in
+  the surface's light.
+- **A cast shadow on flat water is a polygon.** The per-vertex horizon shadow
+  also fell on water: with points 15 units apart a tree's 50-unit shadow became a
+  hard-edged dark blade lying across the lake. Water takes no cast shadow, for
+  the same reason crowns are porous occluders on land.
+- **The wave fade was quantised.** `wf_dist` was pushed around with `hash1(floor(
+  xz * 0.004))`, which steps 55 units at a cell boundary -- a hard-edged band
+  across the water that followed the hash lattice rather than the waves. Two
+  sines now do it, continuously.
+
+Also: a lake facet painted with the terrain's facet shade drew the carve as a
+dark ribbon (water is one colour now), the ring of facets straddling the
+waterline was painted as sand even where it lay at the water level (a bright
+"blade" in the lake -- a facet touching a lake cell and not rising above that
+cell's level is water), and a chunk's LOD skirt inherited the facet colour but
+not its flow, so a boundary crossing a lake drew a dark 40-unit wall through it.
+
+A cascade down a cliff face was painted with the river's *body* colour, one
+blue wall per facet — a staircase standing in the fjord. A facet whose normal is
+more than ~57 degrees from vertical is now foam-coloured instead: water falling,
+which is what is there.
+
+Then two more, both the same theme at a different scale: **the water's slope is
+the bed's slope, so a river on a gradient is not a flat surface.** A sloped reach
+painted with the still-water colour read as pale teal ledges standing in the
+river; it now whitens toward foam as the facet steepens (a river running downhill
+is whitewater). And the sun glint was 0.9, well past what the surface can absorb:
+it clipped to a *facet-wide polygon of pure 255s* with hard edges, which is what
+the "white wedges" on the water were. It is 0.30 now -- still a glint, not a
+white hole.
+
+Still open on water, and the reason all of this keeps coming back: the surface is
+*painted at mesh resolution*, so anything per-facet -- the waterfall white, the
+waterline ring, the chunk seam -- is a 15-unit polygon. Lakes and channels as
+their own geometry (quads at the fill level, like the sea plane already is) is
+the structural fix -- and it is bigger than it looked from the outside, because
+the bed *is* the surface: build_hydrology flattens lake cells to the fill level
+and carve_river cuts the channel to the river level, so separate water geometry
+would be coplanar with the bed and need the bed sunk by a real depth first. That
+is the slice: a depth profile per cell, then one water surface over it.
+
 ### Still open
 
 - Shadows are still per-vertex from the baked horizon, so distant slopes band.

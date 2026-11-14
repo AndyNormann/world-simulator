@@ -135,6 +135,12 @@ float dither(vec2 p){
 
 void main(){
     vec3 n = normalize(v_nrm);
+    // Water is flat. Its mesh is the carved *bed*, so a channel or a lake bottom
+    // gives neighbouring water facets normals that differ by tens of degrees --
+    // and the sun then paints the trench across the lake as a dark stripe. The
+    // surface's own light comes from the Fresnel and the swell below; the bed's
+    // shape has nothing to say about it.
+    if (v_water > 0.5) n = vec3(0.0, 1.0, 0.0);
     vec3 L = u_sun.xyz;
     float ndl = max(dot(n, L), 0.0) * 0.65 + 0.35;
     // shadow from the baked horizon: the sun is occluded when it sits below
@@ -150,6 +156,12 @@ void main(){
     int k1 = (k0 + 1) & 7;
     float occ = mix(hs[k0], hs[k1], fract(su));
     float vis = smoothstep(occ - 0.03, occ + 0.03, u_sun.w);
+    // ...and water does not take that shadow. Its surface is flat, its vertices
+    // are 15 units apart and a tree at 10:00 casts a 50-unit shadow, so what the
+    // shadow does to a lake is a hard-edged dark blade lying on the water. The
+    // same reason trees are porous occluders on land: this mesh cannot resolve
+    // the shadow, so it must not draw one.
+    if (v_water > 0.5) vis = 1.0;
     vec3 amb = mix(u_gnd_amb.rgb, u_sky_amb.rgb, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
     vec3 c = v_col * (amb + u_sun_col.rgb * ndl * 1.05 * vis);
     c += v_col * u_fill.rgb * max(0.0, -dot(n, L));
@@ -168,8 +180,14 @@ void main(){
     // swept a visible ripple ring across otherwise smooth water. Pushing the
     // boundary around with a world-space hash makes it ragged and the sweep
     // invisible: the same amplitude change, smeared over ~200 units.
-    float wf_dist = v_depth + 110.0 * (hash1(vec3(floor(v_wpos.xz * 0.004), 11.0)) - 0.5)
-                              + 70.0  * (hash1(vec3(floor(v_wpos.xz * 0.021), 5.0)) - 0.5);
+    // ...and the hash that pushes it around has to be *continuous*. Quantised by
+    // floor() it changes by 55 units in one step at a cell boundary, and that
+    // step is visible as a hard-edged band lying across the water -- a straight
+    // seam that follows the hash lattice, not the waves. Two sines of the same
+    // wavelengths do the same job and have no edges.
+    float wf_dist = v_depth
+        + 110.0 * sin(v_wpos.x * 0.0031 + 1.7) * sin(v_wpos.z * 0.0043 - 0.6)
+        +  70.0 * sin(v_wpos.x * 0.0212 - 2.3) * sin(v_wpos.z * 0.0168 + 1.1);
     float wfade = 1.0 - smoothstep(60.0, 400.0, wf_dist);
     if (v_water > 0.5 && length(v_flow) > 0.5) {
         float f = dot(v_wpos.xz, v_flow) * 0.10 - u_sky.z * 1.3;
@@ -202,7 +220,10 @@ void main(){
         vec3 R = reflect(V, N);
         vec3 refl = sky_col(sqrt(max(R.y, 0.0)));
         float glint = pow(max(dot(R, u_sun.xyz), 0.0), 90.0) * (1.0 - u_sky.y);
-        c = c * (1.0 - fres) + refl * fres * 0.90 + u_sun_col.rgb * glint * 0.9;
+        // 0.9 clipped to pure white on a facet-wide patch: the highlight's
+        // peak is well above what the surface can absorb, so its edge was a
+        // hard polygon of 255s rather than a glint
+        c = c * (1.0 - fres) + refl * fres * 0.90 + u_sun_col.rgb * glint * 0.30;
     }
     c = clamp(c * 1.15, 0.0, 1.0);
     c = mix(c, c * c * (3.0 - 2.0 * c), 0.55);

@@ -1952,6 +1952,20 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            and painting it as a river put its moving ripple band on top of the
            lake as a bright dashed stripe */
         int is_lake = lake_at(cxw, czw);
+        /* The lake's *surface* is the flattened bed, painted per facet by its
+           centre -- so the ring of facets straddling the waterline is painted
+           as ground even where it lies at the water level, and a carved bank
+           reads as a long sand blade lying in the lake at the waterline. A
+           facet that touches a lake cell and does not rise above that cell's
+           level is water: a lake cell's height *is* the water level. */
+        if (!is_lake) {
+            for (int q = 0; q < 3; q++) {
+                int p = dt[k].v[q];
+                if (!lake_at(pts_x[p], pts_z[p])) continue;
+                float lvl = sample_height(pts_x[p], pts_z[p]);
+                if (cyw <= lvl + 0.35f) { is_lake = 1; break; }
+            }
+        }
         /* Painted by the *whole* facet, not by its centre: a channel is barely
            one facet wide on a steep reach, so a centre-only test left the river
            as a scatter of teal confetti with gaps between the patches. The
@@ -1965,10 +1979,30 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             if (pt_riv[p] < inside) { inside = pt_riv[p]; qi = p; }
         }
         if (qi >= 0) { river_lvl = pt_lvl[qi]; rx = pt_fx[qi]; rz = pt_fz[qi]; }
-        if (!is_lake && inside < 0.0f && river_bed_ok(cxw, czw)) {
+        /* A facet standing on end is a cascade, not a river surface. Painting
+           the body colour there drew a river down a cliff as a staircase of
+           blue walls (one per facet) standing in the fjord below. Steep river
+           facets get the foam colour instead: what you see is water *falling*,
+           which is what is actually there. */
+        /* the facet's *centre* has to be in the channel: one corner inside is
+           enough to paint water (a channel is narrower than a facet), but foam
+           on a bank facet is a white wedge lying on the sand */
+        float ins_mean = (pt_riv[dt[k].v[0]] + pt_riv[dt[k].v[1]] + pt_riv[dt[k].v[2]]) / 3.0f;
+        int falling = ny_[k] < 0.55f && ins_mean < 0.0f;
+        if (!is_lake && inside < 0.0f && river_bed_ok(cxw, czw) && !falling) {
             fx2 = rx; fz2 = rz;
-            float wj = 1.0f + (j - 1.0f) * 0.5f;
-            r = WATER_COL[0]*wj; g = WATER_COL[1]*wj; b = WATER_COL[2]*wj;
+            r = WATER_COL[0]; g = WATER_COL[1]; b = WATER_COL[2];
+            /* A river running down a slope is whitewater, not a teal shelf: the
+               surface here *is* the bed, so a sloped reach was painted with the
+               still-water colour on facets tilted 20-40 degrees -- pale teal
+               ledges sticking up out of the river. Blend to foam as the facet
+               steepens, so the water's own slope decides. */
+            float whiten = (0.92f - ny_[k]) / 0.37f;
+            whiten = whiten < 0.0f ? 0.0f : (whiten > 1.0f ? 1.0f : whiten);
+            whiten *= whiten;
+            r += (0.80f - r) * whiten;
+            g += (0.86f - g) * whiten;
+            b += (0.90f - b) * whiten;
             /* A waterfall is a river whose surface drops between here and two
                cells downstream. There is no foam simulation and no spray
                geometry: white facets on a steep reach read as falling water and
@@ -1982,13 +2016,20 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 r = 0.80f; g = 0.86f; b = 0.90f;
                 fx2 *= 2.4f; fz2 *= 2.4f;      /* faster ripple: it is falling */
             }
+        } else if (!is_lake && inside < 0.0f && falling) {
+            /* foam, and no ripple: it is falling */
+            r = 0.80f; g = 0.86f; b = 0.90f;
         } else if (is_lake) {
             /* length 2 marks a lake: still water to the shader (which keys on
                a non-zero flow), but a fixed unit direction on a big lake draws
                one long straight ripple band across the whole surface */
             fx2 = 1.6f; fz2 = 1.2f;
-            float wj = 1.0f + (j - 1.0f) * 0.5f;
-            r = WATER_COL[0]*wj; g = WATER_COL[1]*wj; b = WATER_COL[2]*wj;
+            /* No facet shade on water. A lake surface is flat, but the mesh
+               under it is the carved bed, so facet normals differ and `j`
+               painted the river's trench across the lake as a dark stripe.
+               Water gets its light from the Fresnel and the swell in the
+               shader; the terrain's facet lighting has nothing to say here. */
+            r = WATER_COL[0]; g = WATER_COL[1]; b = WATER_COL[2];
         }
 
         tri_col[k][0] = r; tri_col[k][1] = g; tri_col[k][2] = b;
@@ -2040,8 +2081,12 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 float pb[3] = { pts_x[b], sample_height(pts_x[b], pts_z[b]), pts_z[b] };
                 float da[3] = { pa[0], pa[1] - SK, pa[2] };
                 float db[3] = { pb[0], pb[1] - SK, pb[2] };
-                push_vert(pa, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
-                push_vert(pb, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
+                /* the facet's own flow, not zero: a skirt standing in a lake
+                   was water-coloured but land-shaded (a flow of zero is what
+                   the shader reads as "not water"), so a chunk boundary
+                   crossing a lake drew a dark 40-unit wall through it */
+                push_vert(pa, nrm, tri_col[k], 0,0, tri_flow[k][0], tri_flow[k][1], shp, bcp);
+                push_vert(pb, nrm, tri_col[k], 0,0, tri_flow[k][0], tri_flow[k][1], shp, bcp);
                 push_vert(db, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
                 /* both windings: the wall is visible from either side of it */
                 push_vert(pa, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
