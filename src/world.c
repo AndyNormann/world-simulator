@@ -716,6 +716,15 @@ void build_hydrology(unsigned seed) {
     river_count = 0;
     river_lo = 1e9f;
     river_hi = -1e9f;
+    /* The bucket index still describes the *previous* network (build_seg_index
+       runs after this), and the tributary skip below asks river_query where the
+       rivers are. Drop it, so river_query scans the segments built so far --
+       which is what a fresh process does, and therefore what a rebuild must do
+       too. Without this, a world rebuilt in place came out with a different
+       river network from the same seed. */
+    free(seg_bstart); seg_bstart = NULL;
+    free(seg_blist);  seg_blist = NULL;
+    seg_nb = 0;
     int mouth = -1;
     float best_acc = 0.0f;
     for (int i = 0; i < N * N; i++) {
@@ -2083,6 +2092,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
    the moment the world grew. 500/2200 and 1000/2200 are the ratios. */
 
 int chunk_tier(float d) {
+    if (lod_clamp) return lod_clamp;   /* the overlay's LOD switch */
     if (getenv("NOLOD")) return 1;   /* A/B knob: dense everywhere */
     if (d < TIER_1_MAX) return 1;
     if (d < TIER_2_MAX) return 2;
@@ -2342,6 +2352,7 @@ void start_streamer(unsigned seed) {
         chunk_set_state(&chunks[i], CHUNK_EMPTY);
         chunks[i].tier = 0;
         chunks[i].buf.id = SG_INVALID_ID;
+        free(chunks[i].data);       /* built but never uploaded: a rebuild drops it */
         chunks[i].data = NULL;
         chunks[i].cx = i % CHUNK_GRID;
         chunks[i].cz = i / CHUNK_GRID;
@@ -2474,6 +2485,8 @@ void pick_sea_level(unsigned seed) {
     int k = (int)((1.0f - target) * (float)(M * M - 1));
     world_sea = v[k];
 }
+
+int terrain_force = -1;   /* `--world NAME`: see terrain.h */
 
 void build_world_data(unsigned seed) {
     pick_sea_level(seed);

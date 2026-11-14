@@ -5,6 +5,11 @@
    Everything here is a pure function of (x, z, seed) so generation is
    reproducible and the same field can be sampled for camera collision. */
 
+#ifdef __cplusplus
+extern "C" {   /* the overlay TU includes this header as C++ */
+#endif
+
+#include <string.h>
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -167,17 +172,42 @@ typedef struct {
     int   rivers;       /* target river systems */
 } worldgen_t;
 
+/* The four archetypes, in the order the dock and `--world` name them. The seed
+   only *selects* from this table -- the generator is one generator, and these
+   are four corners of its parameter space. */
+#define WORLDGEN_COUNT 4
+static const worldgen_t worldgen_table[WORLDGEN_COUNT] = {
+    /* flagship: ranges with passes, high relief */
+    { "alpine",      240.0f, 1950.0f, 1.35f, 0.40f, 0.30f, 3.20f, 0.25f, 2, 24 },
+    /* farmland, low hills, easy to cross */
+    { "rolling",     225.0f,  950.0f, 0.85f, 0.45f, 0.26f, 2.30f, 0.28f, 1, 20 },
+    /* many landmasses, straits instead of passes */
+    { "archipelago", 210.0f, 1350.0f, 0.95f, 0.78f, 0.50f, 2.60f, 0.24f, 1, 14 },
+    { "highland",    300.0f, 1500.0f, 1.15f, 0.36f, 0.24f, 2.80f, 0.26f, 2, 18 },
+};
+
+/* Set by `--world NAME` (and by the overlay) before the world is built, so a
+   world is (seed, archetype) and not seed alone. Read on the builder thread,
+   which is safe because it is written once, before start_streamer(). Defined in
+   world.c so every TU that inlines terrain_gen sees the same value. */
+extern int terrain_force;
+
+static inline int terrain_world_index(const char *name) {
+    for (int i = 0; i < WORLDGEN_COUNT; i++)
+        if (!strcmp(worldgen_table[i].name, name)) return i;
+    return -1;
+}
+
 static inline worldgen_t terrain_gen(unsigned seed) {
+    if (terrain_force >= 0 && terrain_force < WORLDGEN_COUNT)
+        return worldgen_table[terrain_force];
     unsigned h = seed * 2654435761u;
     h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
     unsigned pick = h % 100u;
-    if (pick < 35u)   /* flagship: ranges with passes, high relief */
-        return (worldgen_t){ "alpine",      240.0f, 1950.0f, 1.35f, 0.40f, 0.30f, 3.20f, 0.25f, 2, 24 };
-    if (pick < 65u)   /* farmland, low hills, easy to cross */
-        return (worldgen_t){ "rolling",     225.0f,  950.0f, 0.85f, 0.45f, 0.26f, 2.30f, 0.28f, 1, 20 };
-    if (pick < 85u)   /* many landmasses, straits instead of passes */
-        return (worldgen_t){ "archipelago", 210.0f, 1350.0f, 0.95f, 0.78f, 0.50f, 2.60f, 0.24f, 1, 14 };
-    return (worldgen_t){ "highland",    300.0f, 1500.0f, 1.15f, 0.36f, 0.24f, 2.80f, 0.26f, 2, 18 };
+    if (pick < 35u) return worldgen_table[0];
+    if (pick < 65u) return worldgen_table[1];
+    if (pick < 85u) return worldgen_table[2];
+    return worldgen_table[3];
 }
 
 #define TERRAIN_CONTINENT_FREQ 0.45f
@@ -438,5 +468,9 @@ static inline void terrain_smooth_highs(float *h, float *scratch, int n, float t
         }
     }
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

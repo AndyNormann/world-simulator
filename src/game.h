@@ -37,6 +37,13 @@
 #include <stdarg.h>
 #include <math.h>
 
+/* The overlay is compiled as C++ (dear imgui has no C build), and everything
+   this header declares lives in C translation units. Opened after the includes
+   so the system and sokol headers keep their own linkage. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define N TERRAIN_N
 #define CELL (TERRAIN_WORLD / (float)(N - 1))
 
@@ -187,12 +194,31 @@ GV(int tree_count,0)
    for none. Opt-in on purpose -- every golden and every sweep stays townless
    unless a shot asks for one. */
 GV(int settlement_site,-1)
+void live_shot(const char *path);   /* F2: screenshot + reproducer line */
+GV(const char *live_path,NULL)      /* --live FILE: take that shot and quit */
+GV(int rebuild_seed,-1)
+GV(int ui_at_start,0)                /* --ui: open the overlay (testing, docs) */             /* --rebuild SEED: rebuild in place at frame 10 */
+#ifdef __cplusplus
+extern "C" {   /* the overlay is the one C++ TU; everything else stays C */
+#endif
+void ui_setup(void);
+void ui_shutdown(void);
+void ui_frame(int w, int h);        /* builds the panels for this frame */
+void ui_draw_pass(void);            /* draws them inside the present pass */
+int  ui_wants_mouse(void);          /* overlay open: do not steer the camera */
+void ui_toggle(void);               /* Tab */
+int  ui_event(const void *sapp_event);  /* 1 = the overlay consumed it */
+#ifdef __cplusplus
+}
+#endif
+void world_rebuild(unsigned seed);  /* new world in the same window */
 G(sg_pipeline pip)
 G(sg_pipeline sky_pip)
 G(sg_bindings bindings)
 G(sg_pass_action pass_action)
 G(sg_buffer vbuf)
 GV(unsigned terrain_seed,1)
+
 GV(const char *shot_path,"build/shots/shot.png")
 GV(int headless,0) /* no window: render an offscreen texture */
 GV(int frame_count,0) /* frames rendered, for diagnostics only */
@@ -216,6 +242,7 @@ GV(float world_relief,0.0f) /* highest land minus lowest land */
 GV(float day_hours,9.18f) /* 0..24, sunrise at 6, sunset at 18 */
 GV(int time_fixed,0) /* --time given: do not advance */
 GV(float anim_time,0.0f) /* sim_frames / 60, not wall clock */
+GV(float anim_fixed,-1.0f) /* --anim: pin the wind phase so a live shot reproduces */
 GV(int have_view,0) /* --yaw/--pitch/--cam given: don't auto-aim */
 GV(int trees_only,0)
 GV(float peak_x,0.0f)
@@ -307,8 +334,12 @@ GV(const int GFX_MSAA,1)
    down. Costs only shot time, which nothing is waiting on, and buys more edge
    quality than any MSAA level. A moving window cannot afford it. */
 GV(int gfx_nocull,0)  /* 1: ignore the frustum test (cull correctness probe) */
+GV(int lod_clamp,0)   /* 1/2/4: force that mesh step everywhere (0 = by distance) */
+GV(float speed_walk,30.0f) /* inspection speeds, not a walking pace */
+GV(float speed_shift,220.0f)
 GV(int gfx_ssaa,2)
 GV(int ssaa_given,0)
+GV(int size_given,0)
 GV(int fb_w,0)   /* internal render size: gfx_w * gfx_ssaa */
 GV(int fb_h,0)
 GV(id<MTLDevice> mtl_device,nil)
@@ -453,5 +484,9 @@ float key_state(const char *field);
 void replay_assert(const char *rest);
 void replay_run(const char *path, int render_enabled);
 sapp_desc game_desc(int argc, char *argv[]);
+
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
 
 #endif /* GAME_H */

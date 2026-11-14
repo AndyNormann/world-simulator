@@ -221,6 +221,73 @@ kill, discovery-driven alert, XP from the event queue.
 **M4 — the rest of the fantasy.** Disease tree, zombies, anchors, banishment and
 the fast-forward through the same tick loop.
 
+## D — devtools: capture, regenerate, overlay — **done**
+
+The loop that was missing was *look at the world -> notice a place -> go there ->
+change the world -> look again*. It exists now: Tab opens a panel, F2 writes a
+screenshot that carries the command to reproduce it, and the world can be
+rebuilt under a new seed or archetype without restarting the process.
+
+**What a world is.** `(seed, archetype)`. The generator always had four
+archetypes (alpine / rolling / archipelago / highland) and picked one from a hash
+of the seed; `--world NAME` and the archetype combo now force one, `auto` keeps
+the old behaviour, and every stats line and reproducer command prints both. Same
+seed, four worlds: peaks 1811 / 510 / 929 / 1253 units, which is the table
+working and not four copies of the same pancake.
+
+**Screenshots that reproduce themselves.** F2 (or the panel) re-renders the
+current state at `--ssaa 2`, writes the PNG and prints
+
+    ./build/game shot --seed 12 --world alpine --size 2560x1440 --ssaa 2 \
+        --cam 4262.0,340.0,962.0 --yaw 180.00 --pitch -25.00 --time 9.20 --anim 1.500
+
+That line is the deliverable, and it is exact: the windowed `--live` shot and the
+headless command above produce **identical PNGs** (mean 0.000%). This cost ~30
+lines because the scene already renders into its own target and the window only
+receives the TAA result; the missing piece was reading back a sokol-owned texture
+in the windowed path (`sg_mtl_query_image_info`). `--anim` pins the wind phase,
+which is what makes the comparison possible at all — a live frame's sway phase
+comes from `sim_frames`, and a shot from a fresh process has it at zero.
+
+**Rebuild in place, and the bug its gate found.** `world_rebuild(seed)` stops the
+streamer, drops the device and the targets, and builds again. The gate was
+written first: an in-window rebuild must be byte-identical to a fresh process at
+the same `(seed, world, camera, hour, anim)`. It was not, and the diff was 259
+pixels in one corner — which turned out to be a *different river network*
+(`1062` segments at level 1322 versus `1272` at 717). `build_hydrology` asks
+`river_query()` which drainage cells already belong to a river, and in a rebuilt
+process that question was being answered by the **previous world's** segment
+bucket index, because `build_seg_index()` runs after the hydrology. A fresh
+process has no index yet and scans the segments built so far. Dropping the index
+at the start of the network build makes both agree, and a world rebuilt in place
+now matches a fresh one in every number as well as every pixel. Every existing
+gate starts a new process, so nothing else in the repo could have seen this.
+
+**The overlay.** dear imgui v1.92.4 + `sokol_imgui.h`, one C++ TU (`src/ui.cpp`)
+behind `extern "C"`; everything else stays C. Tab toggles it, Escape closes it
+before it quits, F2 still works either way. While it is open the pointer is
+unlocked and the camera does not move, and the world keeps running.
+
+- *world*: seed, `random`, archetype, `rebuild` / `rebuild same seed`, plus the
+  same numbers `shot` prints (build ms, peak, chunks, points, triangles,
+  window size).
+- *camera*: position, yaw/pitch, hour (dragging it pins the clock), walk and
+  shift speed, `look at peak`, `spawn`.
+- *capture*: `screenshot (F2)` and the read-only reproducer line for the current
+  state.
+- *debug*: no-frustum-cull, mesh-step clamp (the `NOLOD` knob as a combo), and
+  the flicker probe (~5 s freeze).
+
+It draws **inside the present pass**, in the window only: two swapchain passes in
+one frame are two drawables and which one reaches the screen is the backend's
+business. That, and `simgui_flush()` refusing to run inside a pass, are now
+logged errors rather than a silently blank panel.
+
+Deliberately not built: sliders for the raw `worldgen_t` fields (a 2-second
+rebuild per tweak and nowhere to keep a good setting), a live re-run of the
+flicker probe per panel widget, and any gameplay logic in the overlay — it reads
+and writes the same globals the keyboard does.
+
 ## Rendering hardening (flicker) — done
 
 ### What was actually wrong

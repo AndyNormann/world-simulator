@@ -14,6 +14,7 @@
 # when libs/sokol does, so game edits rebuild in well under a second.
 
 CC        = clang
+CXX      := clang++
 # ccache (if present) makes unchanged TUs free -- which is most of them when
 # switching branches or between per-agent worktrees with identical content.
 ifneq ($(shell command -v ccache 2>/dev/null),)
@@ -53,11 +54,30 @@ all: game
 game: $(OBJDIR)/game
 
 OBJS := $(OBJDIR)/main.o $(OBJDIR)/world.o $(OBJDIR)/render.o $(OBJDIR)/replay.o \
-        $(OBJDIR)/state.o $(OBJDIR)/map.o $(OBJDIR)/sim.o $(OBJDIR)/sokol_impl.o
+        $(OBJDIR)/state.o $(OBJDIR)/map.o $(OBJDIR)/sim.o $(OBJDIR)/sokol_impl.o \
+        $(OBJDIR)/ui.o $(OBJDIR)/imgui.o $(OBJDIR)/imgui_draw.o \
+        $(OBJDIR)/imgui_tables.o $(OBJDIR)/imgui_widgets.o
 
 $(OBJDIR)/game: $(OBJS)
 	@mkdir -p $(OBJDIR)
-	$(CC) $^ -o $@ $(FRAMEWORKS) $(LDLIBS) $(LDEXTRA)
+	$(CXX) $^ -o $@ $(FRAMEWORKS) $(LDLIBS) $(LDEXTRA)
+
+# The overlay is the only C++ in the project: dear imgui has no C build. It is
+# one TU behind extern "C", so nothing else has to care.
+ifneq ($(shell command -v ccache 2>/dev/null),)
+CXX      := ccache clang++
+endif
+CXXFLAGS := -std=c++11 -g -Wall -Wextra -Wno-unused-parameter $(OPT) \
+            -I libs -isystem libs/imgui -I libs/sokol -I libs/stb -I src
+
+# dear imgui itself, compiled once and never touched again
+IMGUI_SRC := imgui imgui_draw imgui_tables imgui_widgets
+$(foreach f,$(IMGUI_SRC),$(eval $(OBJDIR)/$(f).o: libs/imgui/$(f).cpp $(wildcard libs/imgui/*.h)))
+$(foreach f,$(IMGUI_SRC),$(eval $(OBJDIR)/$(f).o: ; @mkdir -p $(OBJDIR); $(CXX) -x c++ -std=c++11 -O2 -w -isystem libs/imgui -c libs/imgui/$(f).cpp -o $$@))
+
+$(OBJDIR)/%.o: src/%.cpp $(HEADERS) $(wildcard libs/imgui/*.h) libs/sokol/sokol_imgui.h Makefile
+	@mkdir -p $(OBJDIR)
+	$(CXX) -x objective-c++ -fno-objc-arc $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 $(OBJDIR)/%.o: src/%.c $(HEADERS) Makefile
 	@mkdir -p $(OBJDIR)

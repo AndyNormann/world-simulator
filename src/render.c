@@ -307,9 +307,18 @@ void headless_gfx_setup(void) {
     targets_make(fb_w, fb_h, 1);
 }
 
-/* Read the final (TAA-accumulated) frame into `dst` (RGBA8, top-left origin). */
+/* Read the final (TAA-accumulated) frame into `dst` (RGBA8, top-left origin).
+   The headless path owns its textures outright; in the window they belong to
+   sokol, and asking sokol for the raw Metal handle is what makes a screenshot
+   in the running game the same code as a `game shot`. */
 void headless_readback(unsigned char *dst) {
     id<MTLTexture> src = mtl_hist[hist_drawn];
+    if (!src) {
+        sg_mtl_image_info mi = sg_mtl_query_image_info(hist_img[hist_drawn]);
+        src = (id<MTLTexture>)mi.tex[mi.active_slot];
+    }
+    if (!mtl_device) mtl_device = (id<MTLDevice>)(void*)sg_mtl_device();
+    if (!mtl_queue) mtl_queue = (id<MTLCommandQueue>)(void*)sg_mtl_command_queue();
     NSUInteger row = (NSUInteger)fb_w * 4;
     id<MTLBuffer> buf = [mtl_device newBufferWithLength:row * (NSUInteger)fb_h
                                                 options:MTLResourceStorageModeShared];
@@ -327,8 +336,9 @@ void headless_readback(unsigned char *dst) {
     [buf release];
 }
 
-void init(void) {
-    stm_setup();
+/* Device and targets. Separate from init() because a rebuild has to drop them
+   and make them again while the window keeps running. */
+static void gfx_device_setup(void) {
     if (headless) {
         headless_gfx_setup();
     } else {
@@ -354,10 +364,15 @@ void init(void) {
     fb_h = sapp_height() * gfx_ssaa;
     targets_make(fb_w, fb_h, 0);
     }
+}
+
+/* Everything that belongs to *this world*: the terrain and its chunks, the
+   fixed decor buffer and the pipelines that draw it. */
+static void world_gfx_setup(unsigned seed) {
     terrain_check_resolution(CELL);
     draw_distance_check();
     uint64_t t0 = stm_now();
-    build_terrain(terrain_seed);
+    build_terrain(seed);
     build_ms = (float)(stm_sec(stm_now() - t0) * 1000.0);
 
 
@@ -445,6 +460,33 @@ void init(void) {
        background would hijack the pointer the user is still using */
 }
 
+void init(void) {
+    stm_setup();
+    gfx_device_setup();
+    world_gfx_setup(terrain_seed);
+    ui_setup();
+}
+
+/* A new world in the same window. Everything that describes the world is either
+   rebuilt by build_terrain() or destroyed here, and the gate is brutal: a shot
+   after an in-window rebuild must equal a shot from a fresh process at the same
+   (seed, world, camera, hour). A world-static that this misses shows up as a
+   pixel difference, not as a mystery six months later. */
+void world_rebuild(unsigned seed) {
+    stop_streamer();
+    ui_shutdown();
+    sg_shutdown();                 /* chunk buffers, decor vbuf, targets, shaders */
+    /* counters that a fresh process would have at zero */
+    frame_count = 0;
+    sim_frames = 0;
+    anim_time = anim_fixed >= 0.0f ? anim_fixed : 0.0f;
+    stream_rebuilds = 0;
+    gfx_device_setup();
+    terrain_seed = seed;
+    world_gfx_setup(seed);
+    ui_setup();
+}
+
 /* One fixed timestep of simulation. No GPU calls and no wall clock: the same
    scripted input produces the same camera path on any machine, which is what
    makes a replay a test rather than a different program. */
@@ -504,6 +546,10 @@ static void present_pass(void) {
     sg_apply_pipeline(present_pip);
     sg_apply_bindings(&pb);
     sg_draw(0, 3, 1);
+    /* The overlay shares this pass. A second swapchain pass in one frame is two
+       drawables, and which one ends up on screen is the backend's business --
+       so the panel is the last thing drawn in the pass that presents. */
+    ui_draw_pass();
     sg_end_pass();
 }
 
@@ -742,6 +788,7 @@ void render(int w, int h) {
 
 void shutdown_gfx(void) {
     stop_streamer();
+    ui_shutdown();       /* imgui's sokol objects belong to that device */
     sg_shutdown();
 }
 
@@ -808,11 +855,13 @@ void shrink_to(unsigned char *dst, int dw, int dh,
 /* One frame at the internal size, boxed down to the requested size. Every
    headless consumer sees gfx_w x gfx_h; the supersampling is this function's
    business alone. */
+static size_t fb_buf_bytes = 0, cap_buf_bytes = 0;
 static unsigned char *grab(void) {
     size_t big = (size_t)fb_w * (size_t)fb_h * 4;
     size_t small = (size_t)gfx_w * (size_t)gfx_h * 4;
-    if (!fb_buf) fb_buf = (unsigned char*)malloc(big);
-    if (!cap_buf) cap_buf = (unsigned char*)malloc(small);
+    /* a live shot changes the render size, so these are not one-shot mallocs */
+    if (big != fb_buf_bytes) { free(fb_buf); fb_buf = (unsigned char*)malloc(big); fb_buf_bytes = big; }
+    if (small != cap_buf_bytes) { free(cap_buf); cap_buf = (unsigned char*)malloc(small); cap_buf_bytes = small; }
     render(gfx_w, gfx_h);
     headless_readback(fb_buf);
     if (gfx_ssaa > 1) shrink_to(cap_buf, gfx_w, gfx_h, fb_buf, fb_w, fb_h);
@@ -973,7 +1022,9 @@ void flicker_probe(void) {
     free(base); free(alt);
 }
 
-void capture(const char *path) {
+/* Everything below works off gfx_w/gfx_h/gfx_ssaa, so a windowed screenshot is
+   a size change plus the same code path. */
+static void capture_current(const char *path) {
     /* do/while, not while: before the first render nothing is queued yet, so
        world_ready() is trivially true and the capture would photograph an
        empty world. The first render is what asks the streamer for chunks. */
@@ -1033,8 +1084,9 @@ void capture(const char *path) {
     /* stdout, not a sidecar file: nothing detaches stderr any more now that
        there is no `open -g` in front of the process */
     printf("shot %s\n", path);
-    printf("seed=%u size=%dx%d cam=%.1f,%.1f,%.1f yaw=%.2f pitch=%.2f hour=%.2f\n",
-           terrain_seed, gfx_w, gfx_h, cam_x, cam_y, cam_z, yaw, pitch, day_hours);
+    printf("seed=%u world=%s size=%dx%d cam=%.1f,%.1f,%.1f yaw=%.2f pitch=%.2f hour=%.2f\n",
+           terrain_seed, terrain_gen(terrain_seed).name, gfx_w, gfx_h,
+           cam_x, cam_y, cam_z, yaw, pitch, day_hours);
     printf("height=%.1f..%.1f  shadowed=%d%%  trees=%d  build=%.0f+%.0fms  peak=%.0f,%.0f,%.0f\n",
            lo, hi, shadowed_pct(), tree_count, build_ms, build_async_ms,
            peak_x, peak_y, peak_z);
@@ -1045,6 +1097,30 @@ void capture(const char *path) {
     else
         printf("rivers=none\n");
     fflush(stdout);
+}
+
+void capture(const char *path) { capture_current(path); }
+
+/* F2 in the running game. Renders at --ssaa 2 like a still, from a settled
+   accumulator, and prints the command that reproduces the image -- a
+   screenshot you cannot reproduce is a rumour. */
+void live_shot(const char *path) {
+    static int n = 0;
+    int ow = gfx_w, oh = gfx_h, os = gfx_ssaa, og = ssaa_given, ofw = fb_w, ofh = fb_h;
+    /* the window's size unless --size pinned one, which is what makes a
+       scripted screenshot comparable between runs */
+    if (!size_given) { gfx_w = sapp_width(); gfx_h = sapp_height(); }
+    gfx_ssaa = 2; ssaa_given = 1;
+    fb_w = gfx_w * gfx_ssaa; fb_h = gfx_h * gfx_ssaa;
+    capture_current(path);
+    fprintf(stderr,
+        "reproduce: ./build/game shot --seed %u --world %s --size %dx%d --ssaa %d "
+        "--cam %.1f,%.1f,%.1f --yaw %.2f --pitch %.2f --time %.2f --anim %.3f -o %s\n",
+        terrain_seed, terrain_gen(terrain_seed).name, gfx_w, gfx_h, gfx_ssaa,
+        cam_x, cam_y, cam_z, yaw * 180.0f / 3.14159265f, pitch * 180.0f / 3.14159265f,
+        day_hours, anim_time, path);
+    fprintf(stderr, "screenshot %d: %s\n", ++n, path);
+    gfx_w = ow; gfx_h = oh; gfx_ssaa = os; ssaa_given = og; fb_w = ofw; fb_h = ofh;
 }
 
 /* --- replay -----------------------------------------------------------------

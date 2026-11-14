@@ -29,6 +29,12 @@ tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~70s)
 tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/a.png
 tools/render.sh replay replays/smoke.txt
 ./build/game shot --seed 12 --settlement 3 -o build/shots/town.png  # M2: a town
+./build/game shot --seed 7 --world highland -o build/shots/h.png    # force an archetype
+./build/game                      # play; Tab = overlay, F2 = screenshot
+./build/game --seed 12 --ui       # ...with the overlay already open
+./build/game --seed 12 --size 1280x720 --cam X,Y,Z --yaw D --pitch D --time H \
+             --live build/shots/a.png   # windowed screenshot, scriptable
+./build/game --seed 7 --rebuild 12 --live b.png  # rebuild in place (D3's gate)
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
@@ -258,6 +264,30 @@ were deleted, not disabled.
 
 See `libs/VENDORED.md`. sokol and sokol-shdc are pinned together; bumping one
 alone can silently produce a header that does not match the headers.
+
+## Devtools rules (overlay, screenshots, rebuild)
+
+- **A world is `(seed, archetype)`.** `--world NAME` (alpine / rolling /
+  archipelago / highland) sets `terrain_force`, which `terrain_gen()` reads;
+  everything that prints a world must print both, or the reproducer is a lie.
+  `terrain_gen()` runs on the builder thread, so the override may only be
+  written before `start_streamer()`.
+- **A screenshot is the scene, and it records itself.** F2 re-renders at
+  `--ssaa 2` and prints the exact `game shot` command that reproduces the file.
+  That works because the scene always renders into our own target and the window
+  only receives the TAA result — so no overlay code may touch the scene pass, and
+  `--live`/`shot` must stay byte-identical for the same state.
+- **The overlay draws inside the present pass, and only in a window.** Two
+  swapchain passes in one frame are two drawables and the backend decides which
+  one is on screen. `simgui_flush()` builds the lists and must run *outside* a
+  pass; `simgui_draw()` must run *inside* one. Both facts are now errors from
+  sokol-imgui's logger instead of a silently empty screen.
+- **A rebuild in place must equal a fresh process.** `world_rebuild()` tears down
+  the device, the streamer and the targets and builds again; any `static` in
+  `src/world.c` that it forgets shows up as a pixel difference in
+  `--rebuild N --live` versus `--seed N --live`. This is not hypothetical: the
+  first rebuild produced a *different river network* because `build_hydrology`
+  was answering `river_query()` from the previous world's segment buckets.
 
 ## Rendering rules that are easy to break (hardening pass)
 

@@ -3,6 +3,8 @@
 
 /* the game sets this per world; the tests use the default coastline */
 float world_sea = 0.10f;
+/* --world override, defined in src/world.c: -1 means "ask the seed" */
+int terrain_force = -1;
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
