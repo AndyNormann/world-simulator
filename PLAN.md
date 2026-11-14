@@ -425,6 +425,30 @@ renders the frame, renders it again with the frustum test switched off
 `0.00 %`, because a chunk that is still on screen may not be thrown away, and no
 frame-to-frame number can see this: the hole holds still.
 
+### The dark quad on the meadow (found with a screenshot)
+
+A player screenshot of a hillside came with its own reproducer command (D1
+earned its keep on the first try). The frame had a **flat, hard-edged dark
+polygon lying on the slope**, darker than anything around it, with trees standing
+in front of it — it reads as a piece of floating geometry, and it changes shape
+when the camera moves.
+
+It was a **tree shadow**. `horizon_at()` gives every mesh point eight horizon
+angles, and a crown within ~200 units of the point raised the angle in its sector
+to the crown's full angular height. The mesh points are ~15 units apart (CELL
+14.9) and a 10:00 shadow from a 20-unit tree is 40-60 units long, so a *single*
+tree put a handful of neighbouring vertices fully into shade and the ground
+showed that shade as one polygon. Two A/Bs pinned it down: removing the trees
+removes the patch, and changing the hour to 13:30 removes it too (no long
+shadow), while forcing LOD 1 changed nothing.
+
+The fix is one number with a reason: a crown occludes `0.72 ×` its angular
+height, because a crown is porous and its shadow is dappled, not solid. Dense
+stands still shade the ground and any low sun still draws the long forest shadows
+that make dusk look like dusk (the dusk golden moved by 0.17 %), but a lone tree
+no longer throws a 50-unit slab across an open meadow. Walk instability at the
+reported camera went 7.73 % -> 6.87 %.
+
 ### Still open
 
 - Shadows are still per-vertex from the baked horizon, so distant slopes band.

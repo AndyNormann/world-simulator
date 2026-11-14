@@ -284,6 +284,10 @@ void horizon_at(float x, float z, float y, int with_trees, float *out) {
         out[k] = best;
     }
     if (!with_trees || !tree_blist) return;
+    /* Only the crowns that stand *at* the point: the mesh cannot resolve a
+       40-unit cast shadow (points are 15 units apart), so a long one becomes a
+       hard-edged dark polygon lying on the slope. Short range keeps the shade
+       where a canopy actually is, and keeps the dusk forest dark. */
     const float reach = TREE_BUCKET;
     int bx = tree_bucket_of(x), bz = tree_bucket_of(z);
     for (int nz = bz - 1; nz <= bz + 1; nz++) {
@@ -297,7 +301,16 @@ void horizon_at(float x, float z, float y, int with_trees, float *out) {
                 float d2 = dx * dx + dz * dz;
                 if (d2 > reach * reach || d2 < 1e-4f) continue;
                 float d = sqrtf(d2);
-                float ang = atan2f(t->y + t->h * 0.92f - y, d);
+                /* A crown is not a solid slab: it is porous, and its shadow is
+                   dappled. Taking the full angular height made a single tree at
+                   10:00 throw a 50-unit shadow across a meadow whose mesh points
+                   are 15 units apart -- a handful of vertices went fully dark
+                   and the ground showed a hard-edged dark polygon that reads as
+                   floating geometry and changes shape whenever the LOD changes
+                   the point set. 0.72 keeps dense stands (and any low sun, which
+                   is where long shadows earn their keep) and takes the slab out
+                   of the open. */
+                float ang = atan2f(t->y + t->h * 0.92f - y, d) * 0.72f;
                 if (ang < 0.03f) continue;
                 float az = atan2f(dz, dx);
                 if (az < 0.0f) az += 6.28318531f;
@@ -1854,6 +1867,14 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
        smear across a 15-unit cell) and less work (points < cells). */
     for (int i = 0; i < npts; i++) {
         float py = sample_height(pts_x[i], pts_z[i]);
+        /* Terrain only, deliberately *not* the tree crowns. The mesh points are
+           ~15 units apart (CELL 14.9), a crown is ~5 units wide, and its shadow
+           at 10:00 is 40-60 units long -- so one tree turns a handful of
+           vertices fully dark and the ground shows a hard-edged dark polygon
+           lying on the slope, which reads as a piece of floating geometry and
+           moves every time the LOD changes the point set. A crown cannot be
+           resolved by this mesh, so it does not get to cast. Trees keep their
+           own shading; the ground keeps the terrain's. */
         horizon_at(pts_x[i], pts_z[i], py, 1, hor_pt[i]);
         bounce_at(pts_x[i], pts_z[i], py, cr, cg, cb, bnc_pt[i]);
     }
