@@ -289,6 +289,20 @@ alone can silently produce a header that does not match the headers.
   first rebuild produced a *different river network* because `build_hydrology`
   was answering `river_query()` from the previous world's segment buckets.
 
+## Light rules
+
+- **The horizon is a world field, not a per-vertex march.** `bake_horizon_grid`
+  bakes it once per world on a lattice four cells apart; `chunk_build` samples it
+  bilinearly. Marching per vertex makes the shadow depend on the LOD tier -- 9.7%
+  of a distant frame changed brightness on a tier swap, measured -- and it was
+  144 steps per vertex per chunk rebuild, i.e. most of what streaming costs.
+- **`--flicker`'s `rebuild` column is the settled result, not the streaming
+  flash.** Diffing frames while 2500 chunks are in flight is a race with machine
+  speed (2.6% idle, 43% under load); the deterministic question is whether the
+  frame after `world_ready()` equals the frame before. That must be 0.00%.
+- **`--flicker`'s `lod` column is measured after a forced rebuild**, because
+  setting `lod_clamp` does nothing until the streamer re-queues.
+
 ## Water rules
 
 - **Water is geometry, not a colour.** The surface is emitted over the bed

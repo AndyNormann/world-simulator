@@ -152,6 +152,48 @@ void horizon_at(float x, float z, float y, int with_trees, float *out);
 float surface_height(float x, float z);
 float shadow_lit(const float *h, float az, float elev);
 
+/* --- the horizon field ---------------------------------------------------
+   Baked once on a regular lattice and *interpolated* for every mesh vertex,
+   instead of marched at the vertex. Marching at the vertex made the shadow a
+   function of the point set, and the point set is what the LOD changes: a tier
+   swap re-baked the horizon at new vertices, a facet flipped from lit to
+   shadowed, and 9.7% of a distant frame changed brightness -- measured, with
+   the lod column of --flicker. One field, sampled bilinearly, is the same light
+   at every tier. It also takes the 144-step march out of every chunk rebuild,
+   which is most of what a rebuild costs. */
+#define HOR_STEP 4                      /* cells between lattice points */
+#define HOR_G (N / HOR_STEP)
+static float hor_grid[HOR_G * HOR_G * SUN_SECTORS];
+
+void bake_horizon_grid(void) {
+    for (int j = 0; j < HOR_G; j++)
+        for (int i = 0; i < HOR_G; i++) {
+            float x = (float)(i * HOR_STEP) * CELL - TERRAIN_WORLD * 0.5f;
+            float z = (float)(j * HOR_STEP) * CELL - TERRAIN_WORLD * 0.5f;
+            horizon_at(x, z, sample_height(x, z), 1,
+                       &hor_grid[(j * HOR_G + i) * SUN_SECTORS]);
+        }
+}
+
+static void horizon_sample(float x, float z, float *out) {
+    float gx = (x + TERRAIN_WORLD * 0.5f) / (HOR_STEP * CELL);
+    float gz = (z + TERRAIN_WORLD * 0.5f) / (HOR_STEP * CELL);
+    if (gx < 0.0f) gx = 0.0f; if (gz < 0.0f) gz = 0.0f;
+    if (gx > (float)(HOR_G - 2)) gx = (float)(HOR_G - 2);
+    if (gz > (float)(HOR_G - 2)) gz = (float)(HOR_G - 2);
+    int i0 = (int)gx, j0 = (int)gz;
+    float tx = gx - (float)i0, tz = gz - (float)j0;
+    const float *a = &hor_grid[(j0 * HOR_G + i0) * SUN_SECTORS];
+    const float *b = a + SUN_SECTORS;
+    const float *c = a + HOR_G * SUN_SECTORS;
+    const float *d = c + SUN_SECTORS;
+    for (int k = 0; k < SUN_SECTORS; k++) {
+        float t = (a[k] * (1.0f - tx) + b[k] * tx) * (1.0f - tz)
+                + (c[k] * (1.0f - tx) + d[k] * tx) * tz;
+        out[k] = t;
+    }
+}
+
 /* Sampled on a 48x48 lattice rather than per grid cell: this is a number in the
    capture sidecar, and marching the horizon for every cell of a world-scale
    grid to produce it is exactly the cost this change removed. */
@@ -859,12 +901,22 @@ void build_hydrology(unsigned seed) {
    not a dilation of it: the plane must sit strictly over lowered bed, or a
    chord between a lowered mesh point and a natural one rises through it and
    draws a sliver of sand lying on the water. */
-float lake_level_at(float x, float z) {
-    int xi = (int)((x + TERRAIN_WORLD * 0.5f) / CELL);
-    int zi = (int)((z + TERRAIN_WORLD * 0.5f) / CELL);
-    if (xi < 0 || zi < 0 || xi >= N || zi >= N) return 0.0f;
-    return lake_cell[zi * N + xi] ? h_fill[zi * N + xi] : 0.0f;
+float lake_level_near(float x, float z, int r) {
+    int xi0 = (int)((x + TERRAIN_WORLD * 0.5f) / CELL);
+    int zi0 = (int)((z + TERRAIN_WORLD * 0.5f) / CELL);
+    float lv = 0.0f;
+    for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++) {
+            int xi = xi0 + dx, zi = zi0 + dz;
+            if (xi < 0 || zi < 0 || xi >= N || zi >= N) continue;
+            if (!lake_cell[zi * N + xi]) continue;
+            float f = h_fill[zi * N + xi];
+            if (lv <= 0.0f || f < lv) lv = f;
+        }
+    return lv;
 }
+
+float lake_level_at(float x, float z) { return lake_level_near(x, z, 0); }
 
 int lake_at(float x, float z) {
     int xi = (int)((x + TERRAIN_WORLD * 0.5f) / CELL);
@@ -1220,6 +1272,14 @@ int near_water(float x, float z) {
     for (int dz = -2; dz <= 2; dz++)
         for (int dx = -2; dx <= 2; dx++)
             if (lake_at(x + dx * CELL, z + dz * CELL)) return 1;
+    /* And a height test, which is the honest one: the water is a plane and a
+       tree whose ground is under it is standing in the water, however far the
+       nearest lake cell is. The distance test alone left rows of pines basking
+       on the shallows where the plane reaches past the mask. */
+    {
+        float lv = lake_level_near(x, z, 2);
+        if (lv > 0.0f && surface_height(x, z) < lv + 0.5f) return 1;
+    }
     return 0;
 }
 
@@ -1259,6 +1319,12 @@ void place_rocks(unsigned seed) {
                 rh = 2.0f + 11.0f * r1 * r1;
                 rr = rh * (0.75f + 0.7f * r2);
                 if (r2 < 0.30f) { rh *= 0.45f; rr *= 0.75f; }   /* scree chip */
+            }
+            /* A sea stack standing in the sea is scenery; a rock under a lake's
+               surface is not. Height, not distance: the water is a plane. */
+            {
+                float lv = lake_level_near(x, z, 2);
+                if (lv > 0.0f && y < lv + 0.5f) continue;
             }
             if (tree_count >= MAX_TREES) return;
             tree_t *t = &trees[tree_count++];
@@ -1928,20 +1994,12 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             add_point(x, z, d);
         }
     }
-    /* One horizon per point, not per grid cell: the point set is what the
-       surface is drawn from, so this is both more accurate (no bilinear
-       smear across a 15-unit cell) and less work (points < cells). */
+    /* The horizon comes from the world's field, not from this chunk's points:
+       see bake_horizon_grid. Only the bounce is per point, because it is a
+       colour of the ground here rather than a shadow of the ground behind. */
     for (int i = 0; i < npts; i++) {
         float py = sample_height(pts_x[i], pts_z[i]);
-        /* Terrain only, deliberately *not* the tree crowns. The mesh points are
-           ~15 units apart (CELL 14.9), a crown is ~5 units wide, and its shadow
-           at 10:00 is 40-60 units long -- so one tree turns a handful of
-           vertices fully dark and the ground shows a hard-edged dark polygon
-           lying on the slope, which reads as a piece of floating geometry and
-           moves every time the LOD changes the point set. A crown cannot be
-           resolved by this mesh, so it does not get to cast. Trees keep their
-           own shading; the ground keeps the terrain's. */
-        horizon_at(pts_x[i], pts_z[i], py, 1, hor_pt[i]);
+        horizon_sample(pts_x[i], pts_z[i], hor_pt[i]);
         bounce_at(pts_x[i], pts_z[i], py, cr, cg, cb, bnc_pt[i]);
     }
     delaunay();
@@ -2093,11 +2151,19 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 tri_wet[k] = 2;
                 fx2 *= 2.4f; fz2 *= 2.4f;      /* faster ripple: it is falling */
             }
-        } else if (!falling && inside < 0.0f) {
-            /* too steep for a channel bed: nothing to draw */
-        } else if (inside < 0.0f) {
-            /* too steep to hold a surface: the bed itself is painted as foam */
-            r = FOAM_COL[0]; g = FOAM_COL[1]; b = FOAM_COL[2];
+        } else if (falling) {
+            /* A fall gets a surface like any other water, but tilted: each corner
+               takes the river's level where it is, so the drop between two
+               corners is spanned by one plane instead of being painted facet by
+               facet on the cliff, which drew it as a white zig-zag. The clip is
+               skipped for these (a fall hangs off the bed, it does not lie on
+               it). */
+            tri_wet[k] = 2;
+            for (int q = 0; q < 3; q++) {
+                int p = dt[k].v[q];
+                tri_lvl[k][q] = (pt_riv[p] < 3.0f * CELL && pt_lvl[p] > 5.0f)
+                              ? pt_lvl[p] : river_lvl;
+            }
         }
 
         tri_col[k][0] = r; tri_col[k][1] = g; tri_col[k][2] = b;
@@ -2136,7 +2202,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             const float *wc = tri_wet[k] == 2 ? FOAM_COL : WATER_COL;
             float ix[5][2], iy[5];
             int nv = 0;
-            for (int e = 0; e < 3; e++) {
+            for (int e = 0; e < 3 && tri_wet[k] != 2; e++) {
                 int id = dt[k].v[e], jd = dt[k].v[(e + 1) % 3];
                 float bx = pts_x[id], bz = pts_z[id];
                 float jx = pts_x[jd], jz = pts_z[jd];
@@ -2151,6 +2217,13 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                     ix[nv][1] = bz + (jz - bz) * t;
                     iy[nv] = tri_lvl[k][e] + (tri_lvl[k][(e + 1) % 3] - tri_lvl[k][e]) * t;
                     nv++;
+                }
+            }
+            if (tri_wet[k] == 2) {          /* a fall: the whole facet, unclipped */
+                nv = 3;
+                for (int e = 0; e < 3; e++) {
+                    int id = dt[k].v[e];
+                    ix[e][0] = pts_x[id]; ix[e][1] = pts_z[id]; iy[e] = tri_lvl[k][e];
                 }
             }
             for (int t = 1; t + 1 < nv; t++) {
@@ -2728,6 +2801,7 @@ void build_world_data(unsigned seed) {
     place_trees(seed);
     place_rocks(seed);
     build_tree_index();
+    bake_horizon_grid();
     build_geography();
     place_settlement(seed);
     world_stats();

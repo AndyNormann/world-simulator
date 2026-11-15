@@ -929,7 +929,37 @@ void flicker_probe(void) {
     /* Walking: what the player actually reports is the wobble of the image
        from frame to frame while moving, so step the camera a fixed small
        amount and average the consecutive-frame differences. */
-    yaw = yaw0; pitch = pitch0; cam_y = cy0;
+    /* Tier swap last, because it rebuilds every chunk. The frames used to come
+       out byte-identical without that rebuild -- setting lod_clamp does nothing
+       until the streamer re-queues -- which made "does swapping tiers change the
+       light?" pass by accident of sampling rather than by design. Rebuild, then
+       measure the area and the worst pixel. */
+    yaw = yaw0; pitch = pitch0; cam_y = cy0; cam_x = cx0; cam_z = cz0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    lod_clamp = 1;
+    force_rebuild_all();
+    {
+        uint64_t t1 = stm_now();
+        do {
+            grab();
+            if (stm_sec(stm_now() - t1) > SHOT_PUMP_TIMEOUT) {
+                fprintf(stderr, "flicker: tier rebuild stalled after %.0fs\n", SHOT_PUMP_TIMEOUT);
+                exit(1);
+            }
+        } while (!world_ready());
+    }
+    settle(48);
+    memcpy(alt, cap_buf, bytes);
+    lod_clamp = 0;
+    float lod_lvl = flicker_pct(base, alt, 0);
+    int lod_max = 0;
+    for (size_t i = 0; i < (size_t)gfx_w * (size_t)gfx_h; i++)
+        for (int c = 0; c < 3; c++) {
+            int v = (int)base[i*4+c] - (int)alt[i*4+c];
+            if (v < 0) v = -v;
+            if (v > lod_max) lod_max = v;
+        }
     settle(48);
     memcpy(base, cap_buf, bytes);
     float walk = 0.0f, walk_max = 0.0f, walk_up = 0.0f;
@@ -995,15 +1025,27 @@ void flicker_probe(void) {
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
     settle(48);
     memcpy(base, cap_buf, bytes);
+    /* Measured *after* the rebuild settles, not during it. The frames in
+       flight while 2500 chunks stream are a race against how fast this machine
+       builds them -- the same build read 2.6% alone and 43% with the seed sweep
+       running beside it -- so it was an alarm that fired on a busy morning. The
+       real question is whether a rebuild leaves anything behind: rebuild every
+       chunk, wait for the world to be ready, and diff against the frame before.
+       That number is deterministic, and it is 0.00% when the streamer is right. */
     float rebuild_max = 0.0f;
     force_rebuild_all();
-    for (int i = 0; i < 40; i++) {
-        grab();
-        if (i < 3) fprintf(stderr, "rebuild dbg i=%d ready=%d uploads_pending=%d\n", i, world_ready(), jobs_pending());
-        float d1 = flicker_pct(base, cap_buf, 0);
-        if (d1 > rebuild_max) rebuild_max = d1;
-        memcpy(base, cap_buf, bytes);
+    {
+        uint64_t t1 = stm_now();
+        do {
+            grab();
+            if (stm_sec(stm_now() - t1) > SHOT_PUMP_TIMEOUT) {
+                fprintf(stderr, "flicker: rebuild stalled after %.0fs\n", SHOT_PUMP_TIMEOUT);
+                exit(1);
+            }
+        } while (!world_ready());
     }
+    settle(48);
+    rebuild_max = flicker_pct(base, cap_buf, 0);
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
     cam_x = cx0; cam_z = cz0; cam_y = cy0;      /* the walk moved the camera: put it back, or
                                       every measurement after this one is taken
@@ -1015,9 +1057,9 @@ void flicker_probe(void) {
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
     settle(48);
     memcpy(base, cap_buf, bytes);
-    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%%\n",
+    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
            terrain_seed, gfx_w, gfx_h, gfx_ssaa, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
-           cull, flicker_pct(base, alt, 1));
+           cull, flicker_pct(base, alt, 1), lod_lvl, lod_max);
     fflush(stdout);
     free(base); free(alt);
 }

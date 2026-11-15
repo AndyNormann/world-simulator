@@ -497,15 +497,37 @@ re-recorded; that relocation is the placement working, not a bug in it.
 
 ### Still open
 
-- Shadows are still per-vertex from the baked horizon, so distant slopes band.
-  A chunk-local shadow texture is the upgrade path, and it wants the same
-  single-sample pass this work introduced.
+- Shadows still band on distant slopes. The horizon is no longer marched at
+  every mesh vertex -- it is a world lattice, bilinear-sampled (see below) -- but
+  the *shader* still interpolates one shadow value per vertex, so the penumbra is
+  as coarse as the mesh. A per-pixel shadow map (or the lattice as a texture,
+  sampled in the fragment shader) is what removes the banding; with the field now
+  baked once per world, that is a texture upload and two sampler bindings away,
+  not a re-architecture.
 - Tree and rock silhouettes have no alpha; their edges are the remaining hard
   cases for any sampling scheme.
 - `replays/streaming.txt` still catches pop, but nothing measures *tier swap*
   brightness directly: the rendered frames with and without `NOLOD=1` came out
   byte-identical, which is the acceptance criterion satisfied by accident of
   how the shading is sampled rather than by design.
+
+## The horizon is a world field, not a per-vertex march
+
+`bake_horizon_grid` bakes the 8-sector horizon onto a lattice four cells apart
+once per world, and `chunk_build` bilinearly samples it for each vertex. It used
+to march `horizon_at` at every mesh point, which made the shadow a function of
+the point set -- and the point set is what the LOD changes. The tier-swap column
+of `--flicker` measured it: 9.7% of a distant frame changed brightness when every
+chunk went to its finest mesh, because the new vertices re-marched the horizon
+and facets flipped from lit to shadowed. Sampled from one field, the light is the
+same at every tier.
+
+It is also most of what a chunk rebuild cost: 144 horizon steps per vertex per
+rebuild. World build/stream went from 3.1 s to 1.0 s.
+
+What is left of the tier-swap number is the look, measured: 9.0% -> 6.4% with the
+per-facet shade forced off, so two thirds of it is the deliberate ±18% facet
+shade (a coarser mesh picks different facets) and the rest is LOD geometry.
 
 ## Rules that must not be broken by accident
 
