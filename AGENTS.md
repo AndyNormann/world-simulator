@@ -289,6 +289,28 @@ alone can silently produce a header that does not match the headers.
   first rebuild produced a *different river network* because `build_hydrology`
   was answering `river_query()` from the previous world's segment buckets.
 
+## Water rules
+
+- **Water is geometry, not a colour.** The surface is emitted over the bed
+  (`tri_wet`/`tri_lvl`), at the lake's fill level or the river's own level per
+  corner. The bed keeps its terrain colour and shows as the beach. Never paint a
+  terrain facet with `WATER_COL` again: that is what made every water artifact --
+  stripes along the carve, shadow blades, waterline blades, walls at chunk
+  boundaries, teal ledges on sloped reaches -- and they all come back together.
+- **The plane is clipped against the bed** (`chunk_build`'s emit loop) so the
+  waterline is an edge wherever the bed crosses the level. Do not remove the
+  clip: without it a facet straddling the waterline draws its plane under the
+  bank and the ground shows through as a strip of sand on the water.
+- **`settle_lakes` must run after every `carve_river`** (the carve lifts the ring
+  around a lake to the river's level) and lowers the bed to `level - 2.5` using
+  the *lowest* level touching the cell, because two lakes at different fills can
+  meet. Lower only: raising puts a step in the bank.
+- **`close_lakes` fills one-cell cracks in the lake mask.** The river drains
+  through the lake, so the flood leaves a dry band across it, and a dry band is a
+  strip of bed lying on the water.
+- **A facet standing on end holds no surface.** Steep river facets get `FOAM_COL`
+  on the bed instead; a surface there is a blue wall per facet.
+
 ## Rendering rules that are easy to break (hardening pass)
 
 - **One command queue.** `headless_readback` blits on `sg_mtl_command_queue()`.

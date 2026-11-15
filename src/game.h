@@ -260,6 +260,9 @@ GV(int river_count,0)
 GV(float river_lo,0.0f)
 GV(float river_hi,0.0f)
 GV(const float WATER_COL[3],{ 0.07f, 0.27f, 0.31f })
+/* falling water: a cascade's surface, and the bed of a reach too steep to hold
+   one. White-ish because a fall is foam, not a sheet of dark teal. */
+GV(const float FOAM_COL[3],{ 0.80f, 0.86f, 0.90f })
 GV(int seg_nb,0) /* buckets per axis */
 GV(int *seg_bstart,NULL) /* nb*nb+1 offsets into seg_blist */
 GV(int *seg_blist,NULL) /* CSR: segment indices per bucket */
@@ -296,6 +299,10 @@ GV(int mesh_tris,0)
 GV(int mesh_facets,0)
 G(float tri_col[MAX_DT][3])
 G(float tri_flow[MAX_DT][2])
+/* the water surface over this facet: 0 = dry, 1 = water, 2 = falling water.
+   tri_lvl is the surface height at each of the facet's three corners. */
+G(int tri_wet[MAX_DT])
+G(float tri_lvl[MAX_DT][3])
 G(float nx_[MAX_DT], ny_[MAX_DT], nz_[MAX_DT])
 G(pthread_t builder)
 GV(pthread_mutex_t job_mu,PTHREAD_MUTEX_INITIALIZER)

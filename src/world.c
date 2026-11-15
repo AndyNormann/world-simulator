@@ -637,10 +637,8 @@ void build_hydrology(unsigned seed) {
         }
         for (int i = 0; i < N * N; i++) if (lake_cell[i] == 2) lake_cell[i] = 1;
     }
-    /* the drawn surface has to be the water surface, flat, or the lake is a
-       sloped sheet painted blue */
-    for (int i = 0; i < N * N; i++)
-        if (lake_cell[i]) heights[i] = h_fill[i];
+    /* The bed is left where the flood found it: the surface is its own geometry
+       now (settle_lakes + chunk_build), so a lake keeps a real basin. */
 
     /* --- 2: a strictly descending surface to steer the flow ---
        Filled ground is FLAT, and D8 needs a strict descent: on a flat basin
@@ -856,6 +854,18 @@ void build_hydrology(unsigned seed) {
     }
 }
 
+/* The still-water level at this point, or 0. Distinct from the bed height now:
+   the bed is a basin, the level is where the water sits. Exactly the lake mask,
+   not a dilation of it: the plane must sit strictly over lowered bed, or a
+   chord between a lowered mesh point and a natural one rises through it and
+   draws a sliver of sand lying on the water. */
+float lake_level_at(float x, float z) {
+    int xi = (int)((x + TERRAIN_WORLD * 0.5f) / CELL);
+    int zi = (int)((z + TERRAIN_WORLD * 0.5f) / CELL);
+    if (xi < 0 || zi < 0 || xi >= N || zi >= N) return 0.0f;
+    return lake_cell[zi * N + xi] ? h_fill[zi * N + xi] : 0.0f;
+}
+
 int lake_at(float x, float z) {
     int xi = (int)((x + TERRAIN_WORLD * 0.5f) / CELL);
     int zi = (int)((z + TERRAIN_WORLD * 0.5f) / CELL);
@@ -863,9 +873,8 @@ int lake_at(float x, float z) {
     return lake_cell[zi * N + xi];
 }
 
-/* Cut the channel. Inside the local half width the bed lies at the water level,
-   so the water painted on this same mesh meets the ground exactly at its own
-   edge instead of ending in a visible step; outside it the ground blends back
+/* Cut the channel. Inside the local half width the bed lies below the water
+   level (the surface is its own geometry); outside it the ground blends back
    up to untouched height over RIVER_BANK. Width comes from the segment, so the
    channel narrows as it climbs. */
 /* Valleys, cut by the rivers that are already there.
@@ -1030,6 +1039,63 @@ void carve_valleys(void) {
     }
 }
 
+/* Lake beds, last of all the height passes, because carve_river lifts the cells
+   around a lake to the river's own level and that raised bank is what poked up
+   through the water. Lower only, over the same two-cell footprint the water
+   plane covers: raising anything here would put a step in the bank, and a step
+   is a straight line across the lake. Lowering can only push the bed away from
+   the plane, so no chord between two mesh points 15 units apart can rise
+   through the water -- and a bed that merely *follows* the level can, which is
+   what the first version of this drew. */
+/* A lake mask with a one-cell crack in it is a hole in the water: the river's
+   course through the lake drains, so the flood leaves those cells dry, they keep
+   the river's level instead of the lake's, and the bed -- lowered under the lake
+   -- shows through the surface as a strip of sand lying across it. Close the
+   mask: a cell most of whose neighbours are lake is lake, at their level. */
+void close_lakes(void) {
+    for (int zi = 0; zi < N; zi++) {
+        for (int xi = 0; xi < N; xi++) {
+            int i = zi * N + xi;
+            if (lake_cell[i]) continue;
+            int n = 0;
+            float lv = 0.0f;
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int ax = xi + dx, az = zi + dz;
+                    if ((!dx && !dz) || ax < 0 || az < 0 || ax >= N || az >= N) continue;
+                    if (!lake_cell[az * N + ax]) continue;
+                    n++;
+                    float f = h_fill[az * N + ax];
+                    if (lv <= 0.0f || f < lv) lv = f;   /* lowest, as in settle */
+                }
+            if (n >= 5) { lake_cell[i] = 1; h_fill[i] = lv; }
+        }
+    }
+}
+
+void settle_lakes(void) {
+    for (int zi = 0; zi < N; zi++) {
+        for (int xi = 0; xi < N; xi++) {
+            int i = zi * N + xi;
+            /* The *lowest* level touching this cell, its own included: where two
+               lakes at different fills meet, a bed lowered under the higher one
+               still stands above the lower one's surface and shows through it as
+               a strip of sand. */
+            float lv = lake_cell[i] ? h_fill[i] : 0.0f;
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int ax = xi + dx, az = zi + dz;
+                    if (ax < 0 || az < 0 || ax >= N || az >= N) continue;
+                    if (!lake_cell[az * N + ax]) continue;
+                    float f = h_fill[az * N + ax];
+                    if (lv <= 0.0f || f < lv) lv = f;
+                }
+            if (lv <= 0.0f) continue;
+            if (heights[i] > lv - 2.5f) heights[i] = lv - 2.5f;
+        }
+    }
+}
+
 void carve_river(void) {
     if (!seg_n) return;
     for (int zi = 0; zi < N; zi++) {
@@ -1053,11 +1119,11 @@ void carve_river(void) {
             if (d > hw + RIVER_BANK) continue;
             float h = heights[i];
             if (d <= hw) {
-                /* the bed lies *at* the water level and the water is painted on
-                   this same mesh -- a separate water ribbon cannot match a
-                   channel carved on a coarser grid, and every mismatch shows up
-                   as a sliver of sand sticking through the surface */
-                heights[i] = w;
+                /* Below the water, not at it: the surface is its own geometry
+                   now, and a bed at the water level would be coplanar with it
+                   and z-fight. A few units, wider channels deeper. */
+                float bed = w - (2.2f + 0.12f * hw);
+                heights[i] = bed < h ? bed : h;
             } else {
                 float u = (d - hw) / RIVER_BANK;
                 if (u > 1.0f) u = 1.0f;
@@ -1951,21 +2017,25 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         /* the lake wins where the two overlap: a river mouth is still water,
            and painting it as a river put its moving ripple band on top of the
            lake as a bright dashed stripe */
-        int is_lake = lake_at(cxw, czw);
-        /* The lake's *surface* is the flattened bed, painted per facet by its
-           centre -- so the ring of facets straddling the waterline is painted
-           as ground even where it lies at the water level, and a carved bank
-           reads as a long sand blade lying in the lake at the waterline. A
-           facet that touches a lake cell and does not rise above that cell's
-           level is water: a lake cell's height *is* the water level. */
-        if (!is_lake) {
-            for (int q = 0; q < 3; q++) {
-                int p = dt[k].v[q];
-                if (!lake_at(pts_x[p], pts_z[p])) continue;
-                float lvl = sample_height(pts_x[p], pts_z[p]);
-                if (cyw <= lvl + 0.35f) { is_lake = 1; break; }
-            }
+        /* A lake facet is one the lake's *plane* covers: within two cells of a
+           lake cell. Whether the bed is above or below the level there is the
+           terrain's business -- the bed occludes the plane, and where it crosses
+           is the waterline. Which is why a shoreline is a real edge now and not
+           a boundary between painted facets. */
+        /* The *lowest* level touching the facet, corners and centre alike. Two
+           lakes can meet at different fills, and a facet taking the higher one
+           left the lower lake's surface a step below it -- the step's exposed
+           face is the bed, drawn as a strip of sand lying across the water. */
+        float lake_lvl = lake_level_at(cxw, czw);
+        /* Any corner counts, not just the centre. A facet whose middle falls on
+           the bank but whose body crosses the water must still get a plane --
+           otherwise the bed shows through it as a strip of sand lying across the
+           lake, which is exactly what a centroid test drew. */
+        for (int q = 0; q < 3; q++) {
+            float lv = lake_level_at(pts_x[dt[k].v[q]], pts_z[dt[k].v[q]]);
+            if (lv > lake_lvl) lake_lvl = lv;
         }
+        int is_lake = lake_lvl > 0.0f;
         /* Painted by the *whole* facet, not by its centre: a channel is barely
            one facet wide on a steep reach, so a centre-only test left the river
            as a scatter of teal confetti with gaps between the patches. The
@@ -1985,24 +2055,31 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            facets get the foam colour instead: what you see is water *falling*,
            which is what is actually there. */
         /* the facet's *centre* has to be in the channel: one corner inside is
-           enough to paint water (a channel is narrower than a facet), but foam
-           on a bank facet is a white wedge lying on the sand */
+           enough for the surface over it (a channel is narrower than a facet),
+           but foam on a bank facet is a white wedge lying on the sand */
         float ins_mean = (pt_riv[dt[k].v[0]] + pt_riv[dt[k].v[1]] + pt_riv[dt[k].v[2]]) / 3.0f;
         int falling = ny_[k] < 0.55f && ins_mean < 0.0f;
-        if (!is_lake && inside < 0.0f && river_bed_ok(cxw, czw) && !falling) {
+        /* Where the surface goes. The bed keeps its terrain colour underneath
+           and is what shows as the beach wherever it rises out of the water, so
+           this loop decides the surface's height and its ripple and the emit
+           pass below draws it. */
+        tri_wet[k] = 0;
+        if (is_lake) {
+            fx2 = 1.6f; fz2 = 1.2f;      /* length 2: still water, no ripple band */
+            tri_wet[k] = 1;
+            for (int q = 0; q < 3; q++) tri_lvl[k][q] = lake_lvl;
+        } else if (!falling && inside < 0.0f && river_bed_ok(cxw, czw)) {
             fx2 = rx; fz2 = rz;
-            r = WATER_COL[0]; g = WATER_COL[1]; b = WATER_COL[2];
-            /* A river running down a slope is whitewater, not a teal shelf: the
-               surface here *is* the bed, so a sloped reach was painted with the
-               still-water colour on facets tilted 20-40 degrees -- pale teal
-               ledges sticking up out of the river. Blend to foam as the facet
-               steepens, so the water's own slope decides. */
-            float whiten = (0.92f - ny_[k]) / 0.37f;
-            whiten = whiten < 0.0f ? 0.0f : (whiten > 1.0f ? 1.0f : whiten);
-            whiten *= whiten;
-            r += (0.80f - r) * whiten;
-            g += (0.86f - g) * whiten;
-            b += (0.90f - b) * whiten;
+            tri_wet[k] = 1;
+            /* The surface follows the river's own fall, not the channel's
+               cross-section: a facet's corners take the water level where they
+               are, so a reach on a gradient is a tilted plane instead of a
+               staircase of shelves. */
+            for (int q = 0; q < 3; q++) {
+                int p = dt[k].v[q];
+                tri_lvl[k][q] = (pt_riv[p] < 2.0f * CELL && pt_lvl[p] > 5.0f)
+                              ? pt_lvl[p] : river_lvl;
+            }
             /* A waterfall is a river whose surface drops between here and two
                cells downstream. There is no foam simulation and no spray
                geometry: white facets on a steep reach read as falling water and
@@ -2013,23 +2090,14 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             if (river_query(cxw + rx * 2.0f * CELL, czw + rz * 2.0f * CELL,
                             &dn_lvl, NULL, NULL, NULL) < 40.0f
                 && river_lvl - dn_lvl > 14.0f) {
-                r = 0.80f; g = 0.86f; b = 0.90f;
+                tri_wet[k] = 2;
                 fx2 *= 2.4f; fz2 *= 2.4f;      /* faster ripple: it is falling */
             }
-        } else if (!is_lake && inside < 0.0f && falling) {
-            /* foam, and no ripple: it is falling */
-            r = 0.80f; g = 0.86f; b = 0.90f;
-        } else if (is_lake) {
-            /* length 2 marks a lake: still water to the shader (which keys on
-               a non-zero flow), but a fixed unit direction on a big lake draws
-               one long straight ripple band across the whole surface */
-            fx2 = 1.6f; fz2 = 1.2f;
-            /* No facet shade on water. A lake surface is flat, but the mesh
-               under it is the carved bed, so facet normals differ and `j`
-               painted the river's trench across the lake as a dark stripe.
-               Water gets its light from the Fresnel and the swell in the
-               shader; the terrain's facet lighting has nothing to say here. */
-            r = WATER_COL[0]; g = WATER_COL[1]; b = WATER_COL[2];
+        } else if (!falling && inside < 0.0f) {
+            /* too steep for a channel bed: nothing to draw */
+        } else if (inside < 0.0f) {
+            /* too steep to hold a surface: the bed itself is painted as foam */
+            r = FOAM_COL[0]; g = FOAM_COL[1]; b = FOAM_COL[2];
         }
 
         tri_col[k][0] = r; tri_col[k][1] = g; tri_col[k][2] = b;
@@ -2055,8 +2123,44 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         for (int e = 0; e < 3; e++) {
             int id = dt[k].v[e];
             float p[3] = { pts_x[id], sample_height(pts_x[id], pts_z[id]), pts_z[id] };
-            push_vert(p, nrm, tri_col[k], 0.0f, 0.0f,
-                      tri_flow[k][0], tri_flow[k][1], shp, bcp);
+            push_vert(p, nrm, tri_col[k], 0.0f, 0.0f, 0.0f, 0.0f, shp, bcp);
+        }
+        /* The water surface, clipped against the bed it covers. Without the
+           clip, any facet straddling the waterline -- its centre in a lake cell,
+           one corner up the bank -- is a plane a couple of units under the
+           ground at that corner, and the ground shows through it as a thin strip
+           of sand. This is what makes the waterline an edge instead of a
+           per-facet guess. */
+        if (tri_wet[k] && vcount + 5 * 3 * VERT_FLOATS <= MAX_CHUNK_VERTS * VERT_FLOATS) {
+            const float up[3] = { 0.0f, 1.0f, 0.0f };
+            const float *wc = tri_wet[k] == 2 ? FOAM_COL : WATER_COL;
+            float ix[5][2], iy[5];
+            int nv = 0;
+            for (int e = 0; e < 3; e++) {
+                int id = dt[k].v[e], jd = dt[k].v[(e + 1) % 3];
+                float bx = pts_x[id], bz = pts_z[id];
+                float jx = pts_x[jd], jz = pts_z[jd];
+                float da = tri_lvl[k][e]     - sample_height(bx, bz);
+                float db = tri_lvl[k][(e + 1) % 3] - sample_height(jx, jz);
+                if (da >= 0.0f) {
+                    ix[nv][0] = bx; ix[nv][1] = bz; iy[nv] = tri_lvl[k][e]; nv++;
+                }
+                if ((da >= 0.0f) != (db >= 0.0f)) {
+                    float t = da / (da - db);
+                    ix[nv][0] = bx + (jx - bx) * t;
+                    ix[nv][1] = bz + (jz - bz) * t;
+                    iy[nv] = tri_lvl[k][e] + (tri_lvl[k][(e + 1) % 3] - tri_lvl[k][e]) * t;
+                    nv++;
+                }
+            }
+            for (int t = 1; t + 1 < nv; t++) {
+                float a[3] = { ix[0][0],   iy[0],   ix[0][1]   };
+                float b3[3] = { ix[t][0],  iy[t],   ix[t][1]  };
+                float c3[3] = { ix[t+1][0], iy[t+1], ix[t+1][1] };
+                push_vert(a,  up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], shp, bcp);
+                push_vert(b3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], shp, bcp);
+                push_vert(c3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], shp, bcp);
+            }
         }
     }
     /* Skirts. The border ring follows the tier, so a chunk and its neighbour
@@ -2079,19 +2183,27 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 if (!(pt_edge[a] & pt_edge[b])) continue;
                 float pa[3] = { pts_x[a], sample_height(pts_x[a], pts_z[a]), pts_z[a] };
                 float pb[3] = { pts_x[b], sample_height(pts_x[b], pts_z[b]), pts_z[b] };
+                /* A wet facet's wall hangs from the *water surface* and is made
+                   of water: hung from the bed it was a terrain wall poking up
+                   through the lake wherever a tier boundary crossed it. */
+                const float *wc = tri_col[k];
+                float fa = 0.0f, fb = 0.0f;
+                if (tri_wet[k]) {
+                    pa[1] = tri_lvl[k][e];
+                    pb[1] = tri_lvl[k][(e + 1) % 3];
+                    wc = tri_wet[k] == 2 ? FOAM_COL : WATER_COL;
+                    nrm[0] = 0.0f; nrm[1] = 1.0f; nrm[2] = 0.0f;
+                    fa = tri_flow[k][0]; fb = tri_flow[k][1];
+                }
                 float da[3] = { pa[0], pa[1] - SK, pa[2] };
                 float db[3] = { pb[0], pb[1] - SK, pb[2] };
-                /* the facet's own flow, not zero: a skirt standing in a lake
-                   was water-coloured but land-shaded (a flow of zero is what
-                   the shader reads as "not water"), so a chunk boundary
-                   crossing a lake drew a dark 40-unit wall through it */
-                push_vert(pa, nrm, tri_col[k], 0,0, tri_flow[k][0], tri_flow[k][1], shp, bcp);
-                push_vert(pb, nrm, tri_col[k], 0,0, tri_flow[k][0], tri_flow[k][1], shp, bcp);
-                push_vert(db, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
+                push_vert(pa, nrm, wc, 0,0, fa, fb, shp, bcp);
+                push_vert(pb, nrm, wc, 0,0, fa, fb, shp, bcp);
+                push_vert(db, nrm, wc, 0,0, 0,0, shp, bcp);
                 /* both windings: the wall is visible from either side of it */
-                push_vert(pa, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
-                push_vert(db, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
-                push_vert(da, nrm, tri_col[k], 0,0, 0,0, shp, bcp);
+                push_vert(pa, nrm, wc, 0,0, 0,0, shp, bcp);
+                push_vert(db, nrm, wc, 0,0, 0,0, shp, bcp);
+                push_vert(da, nrm, wc, 0,0, 0,0, shp, bcp);
             }
         }
     }
@@ -2606,6 +2718,8 @@ void build_world_data(unsigned seed) {
     carve_river();
     carve_valleys();
     carve_river();
+    close_lakes();
+    settle_lakes();
     /* Again, and last: lake basins are flattened and the channel is carved
        after the first clamp, and both cut vertical steps into the field. */
     terrain_despike(heights, N, 6.0f * CELL);

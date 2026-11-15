@@ -449,56 +449,51 @@ that make dusk look like dusk (the dusk golden moved by 0.17 %), but a lone tree
 no longer throws a 50-unit slab across an open meadow. Walk instability at the
 reported camera went 7.73 % -> 6.87 %.
 
-### Water is not the bed (found on a lake, from a screenshot)
+### Water is not the bed (found on a lake, from a screenshot, then built)
 
-Three separate faults, all the same mistake: the water *surface* was painted on
-the terrain mesh and lit as if it were the terrain.
+The water *surface* used to be the terrain: lakes were flattened to the fill
+level and the river channel was carved *to* the river's level, so both were
+terrain painted teal, one facet at a time, at 15 units per facet. Every artifact
+that produced -- a dark stripe along the river carve, a hard-edged shadow blade
+across the lake, a bright sand blade at the waterline, a 40-unit wall where a
+chunk boundary crossed the water, pale teal ledges where a reach sloped -- was
+that one mistake wearing a different coat. It is a real surface now:
 
-- **The bed's facets lit the water.** Lakes are flattened by the hydrology, but
-  the river channel is cut into the same mesh either side of them, so
-  neighbouring water facets have normals tens of degrees apart. A dark stripe ran
-  the length of the lake, exactly along the carve. Water now uses `n = (0,1,0)`
-  in the shader: the surface is flat, the bed is not, and the bed has no say in
-  the surface's light.
-- **A cast shadow on flat water is a polygon.** The per-vertex horizon shadow
-  also fell on water: with points 15 units apart a tree's 50-unit shadow became a
-  hard-edged dark blade lying across the lake. Water takes no cast shadow, for
-  the same reason crowns are porous occluders on land.
-- **The wave fade was quantised.** `wf_dist` was pushed around with `hash1(floor(
-  xz * 0.004))`, which steps 55 units at a cell boundary -- a hard-edged band
-  across the water that followed the hash lattice rather than the waves. Two
-  sines now do it, continuously.
+- **The bed is a basin.** `settle_lakes` runs after every carve (carve_river
+  lifts the cells around a lake to the river's level, and that raised bank was
+  what poked up through the water) and lowers everything within a cell of a lake
+  to 2.5 under the fill level. Lower only, deliberately: raising anything puts a
+  step in the bank, and a step is a straight line drawn across the lake.
+- **The channel has a depth.** `carve_river` puts the bed a few units *under*
+  the water (wider channels deeper) instead of at it.
+- **The surface is emitted geometry**, flat where the water is still and
+  following the river's own fall where it is not, so the water takes its shape
+  from the water level and never from the bed's cross-section. The bed keeps its
+  terrain colour underneath and is what shows as the beach wherever it rises out
+  of the water -- the waterline is a real edge for the first time.
+- **The sun glint was 0.9**, well past what the surface can absorb: it clipped to
+  a facet-wide polygon of pure 255s with hard edges. That, not the paint, was
+  the "white wedge" on the water. 0.30 now.
+- **A cascade is foam.** A facet standing on end can't hold a surface: painting
+  the body colour there drew a river down a cliff as a staircase of blue walls.
+  Steep river facets are foam-coloured instead -- water falling, which is what is
+  there -- and a reach whose level drops 14 units in two cells is whitewater.
 
-Also: a lake facet painted with the terrain's facet shade drew the carve as a
-dark ribbon (water is one colour now), the ring of facets straddling the
-waterline was painted as sand even where it lay at the water level (a bright
-"blade" in the lake -- a facet touching a lake cell and not rising above that
-cell's level is water), and a chunk's LOD skirt inherited the facet colour but
-not its flow, so a boundary crossing a lake drew a dark 40-unit wall through it.
+- **The surface is clipped against the bed.** A facet straddling the waterline
+  (centre in a lake cell, one corner up the bank) has its plane below the ground
+  at that corner, and the ground showed through as a thin strip of sand lying on
+  the water. The plane is now clipped to where it is above the bed, which is
+  what makes a shoreline an edge instead of a per-facet guess. `settle_lakes`
+  and `close_lakes` keep the bed off the plane in the first place: the bed under
+  a lake is lowered to 2.5 under its level (the *lowest* level touching it,
+  because two lakes at different fills meet), and a lake mask with a one-cell
+  crack in it -- the river drains through it, so the flood leaves those cells
+  dry -- is closed rather than leaving a dry band across the water.
 
-A cascade down a cliff face was painted with the river's *body* colour, one
-blue wall per facet — a staircase standing in the fjord. A facet whose normal is
-more than ~57 degrees from vertical is now foam-coloured instead: water falling,
-which is what is there.
-
-Then two more, both the same theme at a different scale: **the water's slope is
-the bed's slope, so a river on a gradient is not a flat surface.** A sloped reach
-painted with the still-water colour read as pale teal ledges standing in the
-river; it now whitens toward foam as the facet steepens (a river running downhill
-is whitewater). And the sun glint was 0.9, well past what the surface can absorb:
-it clipped to a *facet-wide polygon of pure 255s* with hard edges, which is what
-the "white wedges" on the water were. It is 0.30 now -- still a glint, not a
-white hole.
-
-Still open on water, and the reason all of this keeps coming back: the surface is
-*painted at mesh resolution*, so anything per-facet -- the waterfall white, the
-waterline ring, the chunk seam -- is a 15-unit polygon. Lakes and channels as
-their own geometry (quads at the fill level, like the sea plane already is) is
-the structural fix -- and it is bigger than it looked from the outside, because
-the bed *is* the surface: build_hydrology flattens lake cells to the fill level
-and carve_river cuts the channel to the river level, so separate water geometry
-would be coplanar with the bed and need the bed sunk by a real depth first. That
-is the slice: a depth profile per cell, then one water surface over it.
+Cost: the bed dropped a few units around lakes and rivers, so fertility moved
+with it and the seed-12 town the M2 replay is written against relocated 274 units
+west (centre 4262,962 -> 3988,962, 80 -> 119 buildings). The replay was
+re-recorded; that relocation is the placement working, not a bug in it.
 
 ### Still open
 
