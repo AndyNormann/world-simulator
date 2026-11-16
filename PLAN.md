@@ -511,6 +511,26 @@ re-recorded; that relocation is the placement working, not a bug in it.
   byte-identical, which is the acceptance criterion satisfied by accident of
   how the shading is sampled rather than by design.
 
+## The shadow is a texture now (found by the lod column)
+
+The horizon field was baked per world (see below) but still *delivered* through
+two per-vertex `UBYTE4N` attributes, so the shadow's resolution was the mesh's
+and a tier swap re-sampled it at new vertices. Two RGBA16F images hold the eight
+azimuth sectors (four each, ~700 KB) and the fragment shader filters them, which
+removed the last pixel of tier dependence there was: seed 1, high camera, total
+`lod` 9.04% -> 8.40%, and with the facet shade forced off 6.42% -> 5.41% -- a
+full point of that delta was the light changing with the geometry, and what
+remains is the low-poly ground moving (2.99 points of facet shade + 5.41 of
+chord error). The attributes went away with it: `VERT_FLOATS` 21 -> 19, no
+per-point horizon array, no per-house horizon bake, no 8-bit quantisation.
+
+The bug worth remembering is the mapping. `u_hor` is a uniform rather than a
+shader constant so that growing the world cannot silently misalign it, and the
+first version divided the half-extent by the world size instead of by the
+lattice step: every pixel sampled texel 30, the whole world got one shadow
+value, and the render came out uniformly bright -- a lighting bug whose cause
+was arithmetic.
+
 ## The horizon is a world field, not a per-vertex march
 
 `bake_horizon_grid` bakes the 8-sector horizon onto a lattice four cells apart

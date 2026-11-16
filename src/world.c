@@ -30,7 +30,7 @@ float pack4(float a, float b, float c, float d) {
 
 void push_vert(const float *p, const float *n, const float *c,
                       float aw, float ap, float fx, float fz,
-                      const float *sh, const float *bc) {
+                      const float *bc) {
     if (vcount + VERT_FLOATS > vcap) return;
     float *v = vtarget;
     v[vcount++] = p[0]; v[vcount++] = p[1]; v[vcount++] = p[2];
@@ -38,11 +38,6 @@ void push_vert(const float *p, const float *n, const float *c,
     v[vcount++] = c[0]; v[vcount++] = c[1]; v[vcount++] = c[2];
     v[vcount++] = aw;   v[vcount++] = ap;
     v[vcount++] = fx;   v[vcount++] = fz;
-    for (int k = 0; k < 8; k += 4) {
-        if (sh) v[vcount++] = pack4(sh[k]/HORIZ_RANGE, sh[k+1]/HORIZ_RANGE,
-                                    sh[k+2]/HORIZ_RANGE, sh[k+3]/HORIZ_RANGE);
-        else    v[vcount++] = 0.0f;
-    }
     for (int k = 0; k < 24; k += 4) {
         if (bc) v[vcount++] = pack4(bc[k], bc[k+1], bc[k+2], bc[k+3]);
         else    v[vcount++] = 0.0f;
@@ -82,7 +77,6 @@ typedef struct {
     float x, z, y;               /* centre; y is the lowest ground corner */
     float w, d, h, rh;           /* footprint, wall height, ridge above wall */
     unsigned char wall, roof;
-    float sh[SUN_SECTORS];       /* horizon of the ground it stands on */
 } bld_t;
 
 static bld_t blds[MAX_BLD];
@@ -175,24 +169,9 @@ void bake_horizon_grid(void) {
         }
 }
 
-static void horizon_sample(float x, float z, float *out) {
-    float gx = (x + TERRAIN_WORLD * 0.5f) / (HOR_STEP * CELL);
-    float gz = (z + TERRAIN_WORLD * 0.5f) / (HOR_STEP * CELL);
-    if (gx < 0.0f) gx = 0.0f; if (gz < 0.0f) gz = 0.0f;
-    if (gx > (float)(HOR_G - 2)) gx = (float)(HOR_G - 2);
-    if (gz > (float)(HOR_G - 2)) gz = (float)(HOR_G - 2);
-    int i0 = (int)gx, j0 = (int)gz;
-    float tx = gx - (float)i0, tz = gz - (float)j0;
-    const float *a = &hor_grid[(j0 * HOR_G + i0) * SUN_SECTORS];
-    const float *b = a + SUN_SECTORS;
-    const float *c = a + HOR_G * SUN_SECTORS;
-    const float *d = c + SUN_SECTORS;
-    for (int k = 0; k < SUN_SECTORS; k++) {
-        float t = (a[k] * (1.0f - tx) + b[k] * tx) * (1.0f - tz)
-                + (c[k] * (1.0f - tx) + d[k] * tx) * tz;
-        out[k] = t;
-    }
-}
+/* The field itself, for the renderer: two filterable images sampled per
+   fragment, so the shadow has the screen's resolution instead of the mesh's. */
+const float *horizon_field(void) { return hor_grid; }
 
 /* Sampled on a 48x48 lattice rather than per grid cell: this is a number in the
    capture sidecar, and marching the horizon for every cell of a world-scale
@@ -1227,7 +1206,7 @@ void emit_tri(const float *p0, const float *p1, const float *p2,
         if (tip < 0.0f) tip = 0.0f;
         if (tip > 1.0f) tip = 1.0f;
         tip = tip * tip * sqrtf(tip);
-        push_vert(p, nv, col, tip, sway_phase, 0.0f, 0.0f, sway_shadow, sway_bounce);
+        push_vert(p, nv, col, tip, sway_phase, 0.0f, 0.0f, sway_bounce);
     }
 }
 
@@ -1638,7 +1617,7 @@ void emit_flat_tri(const float *p0, const float *p1, const float *p2,
         const float *p = (k == 0) ? p0 : (k == 1) ? p1 : p2;
         /* negative weight: the vertex shader drifts these instead of swaying */
         const float cup[3] = { 0.0f, 1.0f, 0.0f };
-        push_vert(p, cup, c, -1.0f, phase, 0.0f, 0.0f, NULL, NULL);
+        push_vert(p, cup, c, -1.0f, phase, 0.0f, 0.0f, NULL);
     }
 }
 
@@ -1735,7 +1714,7 @@ void emit_flat_up(const float *p0, const float *p1, const float *p2,
     const float up[3] = { 0.0f, 1.0f, 0.0f };
     for (int k = 0; k < 3; k++) {
         const float *p = (k == 0) ? p0 : (k == 1) ? p1 : p2;
-        push_vert(p, up, c, -2.0f, 0.0f, fx, fz, NULL, NULL);   /* -2: water */
+        push_vert(p, up, c, -2.0f, 0.0f, fx, fz, NULL);   /* -2: water */
     }
 }
 
@@ -1763,7 +1742,7 @@ void emit_birds(unsigned seed) {
             { bx + sz,     y, bz - sz*0.45f },
         };
         for (int k = 0; k < 6; k++)
-            push_vert(v[k], up, BIRD_COL, 3.0f, ph, v[k][0] - bx, 0.0f, NULL, NULL);
+            push_vert(v[k], up, BIRD_COL, 3.0f, ph, v[k][0] - bx, 0.0f, NULL);
     }
 }
 
@@ -1999,7 +1978,6 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
        colour of the ground here rather than a shadow of the ground behind. */
     for (int i = 0; i < npts; i++) {
         float py = sample_height(pts_x[i], pts_z[i]);
-        horizon_sample(pts_x[i], pts_z[i], hor_pt[i]);
         bounce_at(pts_x[i], pts_z[i], py, cr, cg, cb, bnc_pt[i]);
     }
     delaunay();
@@ -2182,14 +2160,13 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     vcount = 0;
     for (int k = 0; k < ndt; k++) {
         if (!dt[k].alive) continue;
-        if (vcount + 3 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) break;
-        const float *shp = hor_pt[dt[k].v[0]];
+        if (vcount + 3 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
         const float *bcp = bnc_pt[dt[k].v[0]];
         float nrm[3] = { nx_[k], ny_[k], nz_[k] };
         for (int e = 0; e < 3; e++) {
             int id = dt[k].v[e];
             float p[3] = { pts_x[id], sample_height(pts_x[id], pts_z[id]), pts_z[id] };
-            push_vert(p, nrm, tri_col[k], 0.0f, 0.0f, 0.0f, 0.0f, shp, bcp);
+            push_vert(p, nrm, tri_col[k], 0.0f, 0.0f, 0.0f, 0.0f, bcp);
         }
         /* The water surface, clipped against the bed it covers. Without the
            clip, any facet straddling the waterline -- its centre in a lake cell,
@@ -2230,9 +2207,9 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 float a[3] = { ix[0][0],   iy[0],   ix[0][1]   };
                 float b3[3] = { ix[t][0],  iy[t],   ix[t][1]  };
                 float c3[3] = { ix[t+1][0], iy[t+1], ix[t+1][1] };
-                push_vert(a,  up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], shp, bcp);
-                push_vert(b3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], shp, bcp);
-                push_vert(c3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], shp, bcp);
+                push_vert(a,  up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], bcp);
+                push_vert(b3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], bcp);
+                push_vert(c3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], bcp);
             }
         }
     }
@@ -2247,8 +2224,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         const float SK = 40.0f;
         for (int k = 0; k < ndt; k++) {
             if (!dt[k].alive) continue;
-            if (vcount + 12 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) break;
-            const float *shp = hor_pt[dt[k].v[0]];
+            if (vcount + 12 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
             const float *bcp = bnc_pt[dt[k].v[0]];
             float nrm[3] = { nx_[k], ny_[k], nz_[k] };
             for (int e = 0; e < 3; e++) {
@@ -2270,13 +2246,13 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 }
                 float da[3] = { pa[0], pa[1] - SK, pa[2] };
                 float db[3] = { pb[0], pb[1] - SK, pb[2] };
-                push_vert(pa, nrm, wc, 0,0, fa, fb, shp, bcp);
-                push_vert(pb, nrm, wc, 0,0, fa, fb, shp, bcp);
-                push_vert(db, nrm, wc, 0,0, 0,0, shp, bcp);
+                push_vert(pa, nrm, wc, 0,0, fa, fb, bcp);
+                push_vert(pb, nrm, wc, 0,0, fa, fb, bcp);
+                push_vert(db, nrm, wc, 0,0, 0,0, bcp);
                 /* both windings: the wall is visible from either side of it */
-                push_vert(pa, nrm, wc, 0,0, 0,0, shp, bcp);
-                push_vert(db, nrm, wc, 0,0, 0,0, shp, bcp);
-                push_vert(da, nrm, wc, 0,0, 0,0, shp, bcp);
+                push_vert(pa, nrm, wc, 0,0, 0,0, bcp);
+                push_vert(db, nrm, wc, 0,0, 0,0, bcp);
+                push_vert(da, nrm, wc, 0,0, 0,0, bcp);
             }
         }
     }
@@ -2284,7 +2260,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     int ntrees = 0;
     for (int t = 0; t < tree_count; t++) {
         if (chunk_of(trees[t].x, trees[t].z) != ci) continue;
-        if (vcount + TREE_VERTS * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) break;
+        if (vcount + TREE_VERTS * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
         float bx = trees[t].x, bz = trees[t].z;
         for (int k = 0; k < ndt; k++) {
             if (!dt[k].alive) continue;
@@ -2303,7 +2279,6 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                        + sample_height(pts_x[id[2]], pts_z[id[2]]) * v;
             /* the tree takes the shade and the bounced light of the ground it
                stands in */
-            sway_shadow = hor_pt[id[0]];
             sway_bounce = bnc_pt[id[0]];
             break;
         }
@@ -2612,6 +2587,7 @@ void start_streamer(unsigned seed) {
     jobs_in_flight = 0;
     builder_quit = 0;
     mesh_pts = mesh_tris = mesh_facets = 0;
+    mesh_overflow = 0;
     builder_t0 = stm_now();
     builder_live = 1;
     builder_started = 1;
@@ -2915,6 +2891,21 @@ void world_stats(void) {
     land_pct = 100.0f * (float)land / (float)(N * N);
     world_relief = hi - lo;
 
+    /* A non-finite height is the one corruption that renders without saying
+       anything: NaN compares false against everything, so it silently stops
+       being land, casts no shadow, and the frame still looks like weather.
+       Check the field once per world instead of every vertex; everything the
+       mesh emits is derived from it. */
+    world_nonfinite = 0;
+    for (int i = 0; i < N * N; i++) if (!isfinite(heights[i])) world_nonfinite++;
+    for (int t = 0; t < tree_count; t++)
+        if (!isfinite(trees[t].x) || !isfinite(trees[t].y) || !isfinite(trees[t].z)
+            || !isfinite(trees[t].r)) world_nonfinite++;
+    for (int b = 0; b < nbld; b++)
+        if (!isfinite(blds[b].x) || !isfinite(blds[b].z)) world_nonfinite++;
+    if (world_nonfinite) fprintf(stderr, "world: %d non-finite samples (seed %u)\n",
+                                 world_nonfinite, terrain_seed);
+
     /* A landmass is only worth calling a landmass if it can hold a town: a
        town needs low ground, a mild slope and to not be a lake. This is a
        cheap proxy for the sim's own scoring -- it can be wrong about *where*
@@ -3067,10 +3058,8 @@ void place_settlement(unsigned seed) {
             b->rh = 2.5f + 3.0f * u2;
             b->wall = (unsigned char)((h >> 5) % 3u);
             b->roof = (unsigned char)((h >> 11) % 3u);
-            /* its own shade, from the ground it stands on: computed once here,
-               because the render path would otherwise march eight horizons for
-               every house on every chunk rebuild */
-            horizon_at(bx, bz, lo, 1, b->sh);
+            /* its shade comes from the horizon field the ground under it uses:
+               sampled per fragment, so a house needs no stored horizon */
         }
     }
 
@@ -3169,11 +3158,10 @@ static void emit_settlement(int ci, int step) {
     if (step > 1) return;
     for (int i = 0; i < nbld; i++) {
         if (chunk_of(blds[i].x, blds[i].z) != ci) continue;
-        if (vcount + 60 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) break;
+        if (vcount + 60 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
         /* Same rule as a tree: it takes the shade of the ground it stands on.
            No sway -- a house does not bend in the wind, so the sway height is
            pushed out of reach. */
-        sway_shadow = blds[i].sh;
         sway_bounce = NULL;
         sway_base = 1.0e6f;
         sway_h = 1.0f;

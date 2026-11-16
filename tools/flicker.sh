@@ -33,6 +33,12 @@
 # lattice (see bake_horizon_grid) -- so this is a regression alarm at 12%, not an
 # acceptance criterion.
 #
+# frame_ms is the cost side, which no pixel diff can see: p50/p99/max of every
+# rendered frame during the probe, including the streaming bursts. A renderer
+# that is stable and correct but stalls for 200 ms has failed the player just as
+# much, and "it stutters" is a report with no image to compare. Gated as an
+# alarm at p99 40 ms / max 120 ms on the same machine that reads ~7/11 today.
+#
 # also *camera* dependent, and the ground camera is auto-framed -- it moves when
 # the terrain or the tree placement does. Seed 1's ground view went from a
 # meadow (walk 3.8%) to a shoreline (6.9%) when trees stopped standing in water,
@@ -54,10 +60,12 @@ for s in "$@"; do
         cull=$(echo "$line"    | sed -n 's/.* cull=\([0-9.]*\)%.*/\1/p')
         lod=$(echo "$line"     | sed -n 's/.* lod=\([0-9.]*\)%.*/\1/p')
         lodmax=$(echo "$line"  | sed -n 's/.* lodmax=\([0-9]*\).*/\1/p')
+        p99=$(echo "$line"     | sed -n 's/.* p99=\([0-9.]*\).*/\1/p')
+        fmax=$(echo "$line"    | sed -n 's/.* max=\([0-9.]*\).*/\1/p')
         awk -v a="$static" -v b="$walk" -v c="$rebuild" -v d="$cull" \
-            -v e="$lod" -v f="$lodmax" \
-            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210) exit 1 }' || {
-            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax)"
+            -v e="$lod" -v f="$lodmax" -v g="$p99" -v h="$fmax" \
+            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210 || g > 40.0 || h > 120.0) exit 1 }' || {
+            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax p99=${p99}ms max=${fmax}ms)"
             fail=1
         }
     done

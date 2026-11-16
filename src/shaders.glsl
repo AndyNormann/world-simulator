@@ -13,14 +13,12 @@ layout(location=1) in vec3 nrm;
 layout(location=2) in vec3 col;
 layout(location=3) in vec2 anim;
 layout(location=4) in vec2 flow;
-layout(location=5) in vec4 sh0;
-layout(location=6) in vec4 sh1;
-layout(location=7) in vec4 b0;
-layout(location=8) in vec4 b1;
-layout(location=9) in vec4 b2;
-layout(location=10) in vec4 b3;
-layout(location=11) in vec4 b4;
-layout(location=12) in vec4 b5;
+layout(location=5) in vec4 b0;
+layout(location=6) in vec4 b1;
+layout(location=7) in vec4 b2;
+layout(location=8) in vec4 b3;
+layout(location=9) in vec4 b4;
+layout(location=10) in vec4 b5;
 
 layout(binding=1) uniform vs_params {
     mat4 mvp;
@@ -34,8 +32,6 @@ out float v_depth;
 out vec2 v_suv;
 out vec3 v_wpos;
 out vec2 v_flow;
-out vec4 v_sh0;
-out vec4 v_sh1;
 out vec3 v_bounce;
 out float v_water;
 
@@ -78,7 +74,7 @@ void main(){
     }
     v_bounce = (bal / bw) * clamp(u_sunv.y, 0.0, 1.0);
     v_water = (anim.x < 0.5 && (length(flow) > 0.5 || anim.x < -1.5)) ? 1.0 : 0.0;
-    v_col=col; v_nrm=nrm; v_wpos=pos; v_flow=flow; v_sh0=sh0; v_sh1=sh1;
+    v_col=col; v_nrm=nrm; v_wpos=pos; v_flow=flow;
     vec4 cp=mvp*vec4(p,1.0); v_depth=cp.w;
     v_suv=cp.xy/max(cp.w,1e-4)*0.5+0.5;
     gl_Position=cp;
@@ -89,6 +85,11 @@ void main(){
 // shaders. Declared once: this used to be copy-pasted, so every new uniform had
 // to be added in three places and a miss only showed up as a black frame.
 @fs terrain_fs
+// the horizon field: four azimuth sectors per image, bilinear on both axes
+layout(binding=3) uniform texture2D sh_a;
+layout(binding=4) uniform texture2D sh_b;
+layout(binding=3) uniform sampler sh_smp;
+layout(binding=4) uniform sampler sh_smp2;
 layout(binding=0) uniform fs_params {
     vec4 u_sun;
     vec4 u_sky;
@@ -105,6 +106,10 @@ layout(binding=0) uniform fs_params {
     vec4 u_cam_pos;
     vec4 u_fog;
     vec4 u_load;
+    // how world xz maps onto the shadow field's texels: (1/step, half extent,
+    // 1/dim, half texel). Passed in rather than baked in, so growing the world
+    // or the lattice cannot leave the shadow silently misaligned.
+    vec4 u_hor;
 };
 
 in vec3 v_col;
@@ -113,8 +118,6 @@ in float v_depth;
 in vec2 v_suv;
 in vec3 v_wpos;
 in vec2 v_flow;
-in vec4 v_sh0;
-in vec4 v_sh1;
 in vec3 v_bounce;
 in float v_water;
 out vec4 frag;
@@ -143,14 +146,18 @@ void main(){
     if (v_water > 0.5) n = vec3(0.0, 1.0, 0.0);
     vec3 L = u_sun.xyz;
     float ndl = max(dot(n, L), 0.0) * 0.65 + 0.35;
-    // shadow from the baked horizon: the sun is occluded when it sits below
-    // the skyline in its own azimuth sector. Interpolating between the two
-    // neighbouring sectors is what makes this continuous instead of stepping
-    // every 45 degrees.
+    // Shadow from the baked horizon field: the sun is occluded when it sits
+    // below the skyline in its own azimuth sector. Two textures hold the eight
+    // sectors as radians, filtered bilinearly -- so the shadow has the pixel's
+    // resolution, not the mesh's. It used to arrive as two per-vertex
+    // attributes, which made the penumbra as coarse as the triangles and made
+    // it *change with the LOD tier*, because the tier decides the vertices.
+    vec2 huv = (v_wpos.xz * u_hor.x + u_hor.y) * u_hor.z + u_hor.w;
+    vec4 ha = texture(sampler2D(sh_a, sh_smp), huv);
+    vec4 hb = texture(sampler2D(sh_b, sh_smp2), huv);
     float hs[8];
-    hs[0]=v_sh0.x; hs[1]=v_sh0.y; hs[2]=v_sh0.z; hs[3]=v_sh0.w;
-    hs[4]=v_sh1.x; hs[5]=v_sh1.y; hs[6]=v_sh1.z; hs[7]=v_sh1.w;
-    for (int i = 0; i < 8; i++) hs[i] *= 1.6;
+    hs[0]=ha.x; hs[1]=ha.y; hs[2]=ha.z; hs[3]=ha.w;
+    hs[4]=hb.x; hs[5]=hb.y; hs[6]=hb.z; hs[7]=hb.w;
     float su = u_sky.x * 1.2732395;
     int k0 = int(floor(su)) & 7;
     int k1 = (k0 + 1) & 7;
@@ -275,6 +282,9 @@ layout(binding=0) uniform sky_params {
     vec4 u_cam_pos;
     vec4 u_fog;
     vec4 u_load;
+    // the terrain's shadow field mapping; the sky does not sample it, but both
+    // fragment stages share one palette blob, so the blocks must be identical
+    vec4 u_hor;
 };
 
 in vec2 v_uv;

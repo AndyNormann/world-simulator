@@ -90,7 +90,7 @@ G(float sky_ao[N * N]) /* baked ambient occlusion, 0..1 */
    The lighting attributes are the ones that were eating the buffer: 32 floats
    of them on every vertex of every tree. They are low-frequency and they end up
    behind a tone curve, so 8 bits is invisible and the vertex halves. */
-#define VERT_FLOATS 21
+#define VERT_FLOATS 19
 /* the horizon angles are stored as a fraction of this */
 #define HORIZ_RANGE 1.6f
 #define TERRAIN_VERTS 36000    /* MAX_PTS 8000 -> at most ~16000 triangles */
@@ -107,6 +107,13 @@ G(float sky_ao[N * N]) /* baked ambient occlusion, 0..1 */
 #define DECOR_VERTS 60000
 G(float verts[DECOR_VERTS * VERT_FLOATS])
 GV(int decor_words,0)
+/* The horizon field: baked once per world on a lattice, uploaded as two
+   filterable images, sampled per fragment. It used to ride in two per-vertex
+   attributes, which made the shadow as coarse as the mesh and made it change
+   with the LOD tier. */
+#define HOR_STEP 4
+#define HOR_G (N / HOR_STEP)
+const float *horizon_field(void);   /* HOR_G*HOR_G entries of SUN_SECTORS floats */
 GV(float *vtarget,verts) /* push_vert writes here; see chunk_verts */
 GV(int vcount,0) /* words written into *vtarget */
 
@@ -157,7 +164,7 @@ typedef struct {
 #define FOG_FAR    (1.18f * TERRAIN_WORLD)
 #define FAR_PLANE  (1.45f * TERRAIN_WORLD)
 #define SEA_EXTENT (TERRAIN_WORLD * 2.6f)
-#define PAL_VECS 15
+#define PAL_VECS 16
 #define PAL_BYTES (PAL_VECS * 16)
 #define VS_BYTES 96                    /* mat4 mvp + vec4 wind + vec4 sun */
 #define TREE_BUCKET 110.0f
@@ -187,7 +194,6 @@ GV(int vcap,0)
 GV(float sway_base,0.0f)
 GV(float sway_h,1.0f)
 GV(float sway_phase,0.0f)
-GV(const float *sway_shadow,NULL)
 GV(const float *sway_bounce,NULL)
 GV(int tree_count,0)
 /* M2: which site (index into the sim's site list) to build as a town, or -1
@@ -285,7 +291,6 @@ G(float pts_x[MAX_PTS + 3], pts_z[MAX_PTS + 3])
 /* per-chunk-point river sample: distance past the half-width, and the level
    and direction the water paint takes when this point is the most inside */
 G(float pt_riv[MAX_PTS + 3], pt_lvl[MAX_PTS + 3], pt_fx[MAX_PTS + 3], pt_fz[MAX_PTS + 3])
-G(float hor_pt[MAX_PTS + 3][SUN_SECTORS])
 G(float bnc_pt[MAX_PTS + 3][SUN_SECTORS * 3])
 GV(int npts,0)
 GV(int ndt,0)
@@ -295,6 +300,11 @@ GV(float clip_x1,0.0f)
 GV(float clip_z0,0.0f)
 GV(float clip_z1,0.0f)
 GV(int mesh_pts,0)
+/* A chunk that runs out of vertex budget used to drop its tail of triangles
+   silently: the frame renders, the world is missing a piece, and nothing says
+   so. Both counters must be zero; the replays assert it. */
+GV(int mesh_overflow,0)
+GV(int world_nonfinite,0)
 GV(int mesh_tris,0)
 GV(int mesh_facets,0)
 G(float tri_col[MAX_DT][3])
@@ -379,7 +389,7 @@ int chunk_state(const chunk_t *c);
 void chunk_set_state(chunk_t *c, int state);
 unsigned quant8(float v);
 float pack4(float a, float b, float c, float d);
-void push_vert(const float *p, const float *n, const float *c, float aw, float ap, float fx, float fz, const float *sh, const float *bc);
+void push_vert(const float *p, const float *n, const float *c, float aw, float ap, float fx, float fz, const float *bc);
 void draw_distance_check(void);
 float sample_height(float x, float z);
 int shadowed_pct(void);
@@ -452,6 +462,8 @@ void build_geography(void);
 int geo_at(float x, float z, geo_cell_t *out);
 int pass_count(void);
 void world_stats(void);
+void frame_time_reset(void);
+void frame_time_stats(float *p50, float *p99, float *worst);
 void build_world_data(unsigned seed);
 void build_terrain(unsigned seed);
 extern int map_plain;

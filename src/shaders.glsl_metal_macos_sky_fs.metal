@@ -22,6 +22,7 @@ struct sky_params
     float4 u_cam_pos;
     float4 u_fog;
     float4 u_load;
+    float4 u_hor;
 };
 
 struct main0_out

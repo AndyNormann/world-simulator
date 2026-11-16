@@ -163,6 +163,14 @@ void build_palette(float hours, float *pal) {
         { 0.0f, 0.0f, 0.0f, 0.0f },
         { 0.0f, 0.0f, 0.0f, 0.0f },      /* eye position: filled in frame() */
         { FOG_START, FOG_FAR, FAR_PLANE, 0.0f },
+        { 0.0f, 0.0f, 0.0f, 0.0f },      /* u_load: the loading bar, set in frame() */
+        /* world xz -> horizon texel, in lattice units: half the world is
+           (TERRAIN_WORLD/2)/step lattice points, so the offset is divided by
+           the step too -- with the raw half-extent every pixel sampled texel
+           30 and the whole world took one shadow value */
+        { 1.0f / (HOR_STEP * CELL),
+          (TERRAIN_WORLD * 0.5f) / (HOR_STEP * CELL),
+          1.0f / (float)HOR_G, 0.5f / (float)HOR_G },
     };
     for (int i = 0; i < PAL_VECS * 4; i++) pal[i] = sets[i / 4][i % 4];
 }
@@ -183,6 +191,33 @@ static sg_image hd_color_img, hd_lin_img, hd_depth_img, hist_img[2];
 static sg_view hd_color_view, hd_lin_view, hd_depth_view, k_color_tex, k_lin_tex;
 static sg_view hist_view[2], hist_tex[2];
 static sg_sampler lin_smp, near_smp;
+/* The horizon field as two filterable images: four azimuth sectors each. The
+   shadow is sampled per fragment from these, which is the whole point -- as
+   per-vertex attributes its resolution was the mesh's and it changed with the
+   LOD tier. ~700 KB total, uploaded once per world. */
+static sg_image sh_img[2];
+static sg_view sh_view[2];
+
+static void horizon_images_make(void) {
+    const float *f = horizon_field();
+    /* RGBA16F: half-float storage, because a 32-bit float image cannot be
+       filtered on Metal -- and this one must interpolate across texels. */
+    static __fp16 plane[2][HOR_G * HOR_G * 4];
+    for (int j = 0; j < HOR_G; j++)
+        for (int i = 0; i < HOR_G; i++)
+            for (int k = 0; k < SUN_SECTORS; k++)
+                plane[k / 4][(j * HOR_G + i) * 4 + (k % 4)] =
+                    (__fp16)f[(j * HOR_G + i) * SUN_SECTORS + k];
+    for (int t = 0; t < 2; t++) {
+        sh_img[t] = sg_make_image(&(sg_image_desc){
+            .width = HOR_G, .height = HOR_G,
+            .pixel_format = SG_PIXELFORMAT_RGBA16F,
+            .data = { .ptr = plane[t], .size = sizeof(plane[t]) } });
+        sh_view[t] = sg_make_view(&(sg_view_desc){ .texture.image = sh_img[t] });
+        bindings.views[3 + t] = sh_view[t];
+        bindings.samplers[3 + t] = lin_smp;    /* radians: filtering is fine */
+    }
+}
 static sg_pipeline taa_pip, present_pip;
 static float prev_vp[16];
 static float prev_vp_valid = 0.0f;
@@ -389,8 +424,6 @@ static void world_gfx_setup(unsigned seed) {
         .layout.attrs[ATTR_terrain_col ].format = SG_VERTEXFORMAT_FLOAT3,
         .layout.attrs[ATTR_terrain_anim].format = SG_VERTEXFORMAT_FLOAT2,
         .layout.attrs[ATTR_terrain_flow].format = SG_VERTEXFORMAT_FLOAT2,
-        .layout.attrs[ATTR_terrain_sh0 ].format = SG_VERTEXFORMAT_UBYTE4N,
-        .layout.attrs[ATTR_terrain_sh1 ].format = SG_VERTEXFORMAT_UBYTE4N,
         .layout.attrs[ATTR_terrain_b0  ].format = SG_VERTEXFORMAT_UBYTE4N,
         .layout.attrs[ATTR_terrain_b1  ].format = SG_VERTEXFORMAT_UBYTE4N,
         .layout.attrs[ATTR_terrain_b2  ].format = SG_VERTEXFORMAT_UBYTE4N,
@@ -431,6 +464,8 @@ static void world_gfx_setup(unsigned seed) {
         .min_filter = SG_FILTER_NEAREST, .mag_filter = SG_FILTER_NEAREST,
         .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
         .label = "nearest-clamp" });
+    /* the shadow field rides on the same filterable sampler */
+    horizon_images_make();
     sg_shader taa_shd = sg_make_shader(quad_shader_desc(sg_query_backend()));
     taa_pip = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = taa_shd,
@@ -855,6 +890,29 @@ void shrink_to(unsigned char *dst, int dw, int dh,
 /* One frame at the internal size, boxed down to the requested size. Every
    headless consumer sees gfx_w x gfx_h; the supersampling is this function's
    business alone. */
+/* Frame-time history. A renderer's failure the player reports as "it stutters"
+   has no pixel to diff, so it needs a number of its own: every rendered frame's
+   wall time, kept in a ring and reported as percentiles. p99 rather than the
+   mean, because one 200 ms frame is the whole complaint. */
+#define FRAME_RING 512
+static float frame_ms[FRAME_RING];
+static int frame_n = 0, frame_i = 0;
+void frame_time_reset(void) { frame_n = 0; frame_i = 0; }
+void frame_time_stats(float *p50, float *p99, float *worst) {
+    float sorted[FRAME_RING];
+    int n = frame_n < FRAME_RING ? frame_n : FRAME_RING;
+    for (int i = 0; i < n; i++) sorted[i] = frame_ms[i];
+    for (int i = 1; i < n; i++) {            /* insertion sort: n <= 512, once */
+        float v = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > v) { sorted[j + 1] = sorted[j]; j--; }
+        sorted[j + 1] = v;
+    }
+    *p50 = n ? sorted[n / 2] : 0.0f;
+    *p99 = n ? sorted[(n * 99) / 100 < n ? (n * 99) / 100 : n - 1] : 0.0f;
+    *worst = n ? sorted[n - 1] : 0.0f;
+}
+
 static size_t fb_buf_bytes = 0, cap_buf_bytes = 0;
 static unsigned char *grab(void) {
     size_t big = (size_t)fb_w * (size_t)fb_h * 4;
@@ -862,8 +920,12 @@ static unsigned char *grab(void) {
     /* a live shot changes the render size, so these are not one-shot mallocs */
     if (big != fb_buf_bytes) { free(fb_buf); fb_buf = (unsigned char*)malloc(big); fb_buf_bytes = big; }
     if (small != cap_buf_bytes) { free(cap_buf); cap_buf = (unsigned char*)malloc(small); cap_buf_bytes = small; }
+    uint64_t ft0 = stm_now();
     render(gfx_w, gfx_h);
     headless_readback(fb_buf);
+    frame_ms[frame_i] = (float)(stm_ms(stm_now() - ft0));
+    frame_i = (frame_i + 1) % FRAME_RING;
+    if (frame_n < FRAME_RING) frame_n++;
     if (gfx_ssaa > 1) shrink_to(cap_buf, gfx_w, gfx_h, fb_buf, fb_w, fb_h);
     else memcpy(cap_buf, fb_buf, small);
     return cap_buf;
@@ -883,6 +945,7 @@ static void settle(int frames) {
 
 void flicker_probe(void) {
     uint64_t t0 = stm_now();
+    frame_time_reset();
     do {
         grab();
         if (stm_sec(stm_now() - t0) > SHOT_PUMP_TIMEOUT) {
@@ -1057,8 +1120,10 @@ void flicker_probe(void) {
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
     settle(48);
     memcpy(base, cap_buf, bytes);
-    printf("flicker seed=%u size=%dx%d ssaa=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
-           terrain_seed, gfx_w, gfx_h, gfx_ssaa, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
+    float f50, f99, fmax;
+    frame_time_stats(&f50, &f99, &fmax);
+    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
+           terrain_seed, gfx_w, gfx_h, gfx_ssaa, f50, f99, fmax, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
            cull, flicker_pct(base, alt, 1), lod_lvl, lod_max);
     fflush(stdout);
     free(base); free(alt);

@@ -59,10 +59,8 @@ struct main0_out
     float2 v_suv [[user(locn3)]];
     float3 v_wpos [[user(locn4)]];
     float2 v_flow [[user(locn5)]];
-    float4 v_sh0 [[user(locn6)]];
-    float4 v_sh1 [[user(locn7)]];
-    float3 v_bounce [[user(locn8)]];
-    float v_water [[user(locn9)]];
+    float3 v_bounce [[user(locn6)]];
+    float v_water [[user(locn7)]];
     float4 gl_Position [[position]];
 };
 
@@ -73,14 +71,12 @@ struct main0_in
     float3 col [[attribute(2)]];
     float2 anim [[attribute(3)]];
     float2 flow [[attribute(4)]];
-    float4 sh0 [[attribute(5)]];
-    float4 sh1 [[attribute(6)]];
-    float4 b0 [[attribute(7)]];
-    float4 b1 [[attribute(8)]];
-    float4 b2 [[attribute(9)]];
-    float4 b3 [[attribute(10)]];
-    float4 b4 [[attribute(11)]];
-    float4 b5 [[attribute(12)]];
+    float4 b0 [[attribute(5)]];
+    float4 b1 [[attribute(6)]];
+    float4 b2 [[attribute(7)]];
+    float4 b3 [[attribute(8)]];
+    float4 b4 [[attribute(9)]];
+    float4 b5 [[attribute(10)]];
 };
 
 vertex main0_out main0(main0_in in [[stage_in]], constant vs_params& _34 [[buffer(1)]])
@@ -104,10 +100,10 @@ vertex main0_out main0(main0_in in [[stage_in]], constant vs_params& _34 [[buffe
             {
                 float3 _115 = p;
                 float2 _117 = _115.xz + (_34.u_wind.xy * ((_34.u_wind.w * 0.800000011920928955078125) + (in.anim.y * 40.0)));
-                float3 _394 = _115;
-                _394.x = _117.x;
-                _394.z = _117.y;
-                p = _394;
+                float3 _388 = _115;
+                _388.x = _117.x;
+                _388.z = _117.y;
+                p = _388;
             }
             else
             {
@@ -169,13 +165,11 @@ vertex main0_out main0(main0_in in [[stage_in]], constant vs_params& _34 [[buffe
     out.v_nrm = in.nrm;
     out.v_wpos = in.pos;
     out.v_flow = in.flow;
-    out.v_sh0 = in.sh0;
-    out.v_sh1 = in.sh1;
-    float4 _365 = _34.mvp * float4(p, 1.0);
-    float _368 = _365.w;
-    out.v_depth = _368;
-    out.v_suv = ((_365.xy / float2(fast::max(_368, 9.9999997473787516355514526367188e-05))) * 0.5) + float2(0.5);
-    out.gl_Position = _365;
+    float4 _358 = _34.mvp * float4(p, 1.0);
+    float _361 = _358.w;
+    out.v_depth = _361;
+    out.v_suv = ((_358.xy / float2(fast::max(_361, 9.9999997473787516355514526367188e-05))) * 0.5) + float2(0.5);
+    out.gl_Position = _358;
     return out;
 }
 

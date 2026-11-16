@@ -291,17 +291,36 @@ alone can silently produce a header that does not match the headers.
 
 ## Light rules
 
-- **The horizon is a world field, not a per-vertex march.** `bake_horizon_grid`
-  bakes it once per world on a lattice four cells apart; `chunk_build` samples it
-  bilinearly. Marching per vertex makes the shadow depend on the LOD tier -- 9.7%
-  of a distant frame changed brightness on a tier swap, measured -- and it was
-  144 steps per vertex per chunk rebuild, i.e. most of what streaming costs.
+- **The horizon is a world field, sampled per fragment.** `bake_horizon_grid`
+  bakes it once per world on a lattice four cells apart; it is uploaded as two
+  RGBA16F images (four azimuth sectors each) and the fragment shader filters it.
+  It has been wrong three ways, each measured: marched per vertex it made the
+  shadow depend on the LOD tier (9.7% of a distant frame changed on a swap) and
+  cost 144 steps per vertex per rebuild; carried in per-vertex attributes it was
+  still as coarse as the mesh, so the penumbra stepped per triangle; and a 32-bit
+  float image cannot be filtered on Metal, so it must be half-float.
+- **The world-to-texel mapping is a uniform, not a shader constant.** It is
+  `u_hor` in the palette (last vec4), because the first version divided the world
+  offset by the world extent instead of the lattice step: every pixel sampled
+  texel 30, the whole world took one shadow value, and every terrain facet
+  rendered fully lit. It looked like a lighting change, not a coordinate bug.
 - **`--flicker`'s `rebuild` column is the settled result, not the streaming
   flash.** Diffing frames while 2500 chunks are in flight is a race with machine
   speed (2.6% idle, 43% under load); the deterministic question is whether the
   frame after `world_ready()` equals the frame before. That must be 0.00%.
 - **`--flicker`'s `lod` column is measured after a forced rebuild**, because
   setting `lod_clamp` does nothing until the streamer re-queues.
+
+- **Structural counters are asserted, not eyeballed.** `overflow` counts chunks
+  that dropped geometry for lack of vertex budget (`break` on `MAX_CHUNK_VERTS`
+  used to truncate a chunk in silence) and `nonfinite` counts NaN heights, trees,
+  rocks or buildings. `replays/smoke.txt` asserts both are zero. A NaN renders as
+  weather: it compares false against everything, so it stops being land and stops
+  casting shadow, and nothing complains.
+- **A stall is a number.** `--flicker` reports `frame_ms p50/p99/max` over every
+  frame of the probe and `tools/flicker.sh` gates p99 40 ms / max 120 ms. "It
+  stutters" arrives with no image to diff, so the cost side needs its own column
+  exactly like the pixel side does.
 
 ## Water rules
 

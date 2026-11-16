@@ -53,6 +53,10 @@ float key_state(const char *field) {
     if (!strcmp(field, "townmasses")) return (float)land_town_masses;
     if (!strcmp(field, "viable")) return (float)land_viable;
     if (!strcmp(field, "relief")) return world_relief;
+    /* structural health: geometry dropped for lack of budget, or a field that
+       generated NaN. Both are silent in the frame and must never be non-zero. */
+    if (!strcmp(field, "overflow")) return (float)mesh_overflow;
+    if (!strcmp(field, "nonfinite")) return (float)world_nonfinite;
     /* the whole heightfield, so a seed sweep can catch a world that generated
        flat, empty or nonsensical without rendering anything */
     if (!strcmp(field, "height_min") || !strcmp(field, "height_max")) {
