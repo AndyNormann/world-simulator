@@ -41,8 +41,21 @@ if [ $quick -eq 0 ]; then
     ./build/game replay replays/artifacts.txt --seed 1 --world alpine --size 960x540 >/dev/null
     # M2: the town is geometry with walls in it, so it is walked, not just drawn
     ./build/game dump replays/town.txt --seed 12 --settlement 3 >/dev/null
+    # goldens are per platform (see tools/goldens.sh): Metal and GL do not
+    # produce the same bytes, and a shared set would have to be diffed at a
+    # tolerance that catches nothing
+case "$(uname -s)" in
+    Darwin) PLATFORM=macos ;;
+    Linux)  PLATFORM=linux ;;
+    *)      PLATFORM=$(uname -s | tr 'A-Z' 'a-z') ;;
+esac
+PLATFORM=${GOLDEN_PLATFORM:-$PLATFORM}
+    if [ ! -d "tests/golden/$PLATFORM" ]; then
+        echo "check: no goldens for $PLATFORM -- run tools/goldens.sh first" >&2
+        exit 1
+    fi
     for n in dusk high low; do
-        tools/diff.sh "tests/golden/$n.png" "build/shots/golden-$n.png" --tol 0.3
+        tools/diff.sh "tests/golden/$PLATFORM/$n.png" "build/shots/golden-$n.png" --tol 0.3
     done
 fi
 
