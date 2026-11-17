@@ -1081,6 +1081,27 @@ void flicker_probe(void) {
     keys[SAPP_KEYCODE_W] = 0;
     walk_player /= 60.0f;
 
+    /* Sprint: 1.5 s at shift speed is 330 units, which is far enough to cross a
+       LOD band boundary (the hysteresis dead band is 60-240). This is the only
+       measurement here that can see a tier swap from the player's seat. */
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    settle(48);
+    memcpy(base, cap_buf, bytes);
+    float sprint = 0.0f, sprint_max = 0.0f;
+    keys[SAPP_KEYCODE_W] = 1;
+    keys[SAPP_KEYCODE_LEFT_SHIFT] = 1;
+    for (int i = 0; i < 90; i++) {
+        sim_step(1.0f / 60.0f);
+        grab();
+        float d = flicker_pct(base, cap_buf, 0);
+        sprint += d;
+        if (d > sprint_max) sprint_max = d;
+        memcpy(base, cap_buf, bytes);
+    }
+    keys[SAPP_KEYCODE_W] = 0;
+    keys[SAPP_KEYCODE_LEFT_SHIFT] = 0;
+    sprint /= 90.0f;
+
     /* Streaming: rebuild every chunk and watch for a flash. Walking forward is
        the motion that triggers tier rebuilds -- going up does not change the
        horizontal distance the streamer keys on -- which is why this, and not
@@ -1122,8 +1143,8 @@ void flicker_probe(void) {
     memcpy(base, cap_buf, bytes);
     float f50, f99, fmax;
     frame_time_stats(&f50, &f99, &fmax);
-    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
-           terrain_seed, gfx_w, gfx_h, gfx_ssaa, f50, f99, fmax, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
+    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f sprint=%.2f%% smax=%.2f%% static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
+           terrain_seed, gfx_w, gfx_h, gfx_ssaa, f50, f99, fmax, sprint, sprint_max, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
            cull, flicker_pct(base, alt, 1), lod_lvl, lod_max);
     fflush(stdout);
     free(base); free(alt);

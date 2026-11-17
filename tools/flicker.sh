@@ -33,6 +33,15 @@
 # lattice (see bake_horizon_grid) -- so this is a regression alarm at 12%, not an
 # acceptance criterion.
 #
+# `sprint` is 1.5 s at shift speed (330 units, far enough to cross a LOD band
+# boundary) and `smax` the worst single frame of it: the only column here that
+# can see a tier swap from the player's seat. Measured with NOLOD=1, which
+# removes tier changes entirely, seed 1 reads 18.97% mean / 24.86% worst either
+# way -- a swap is invisible in motion because both boundaries are 4000 and 8000
+# units away, where a 24-cell chunk is a handful of pixels. What it does catch is
+# streaming failing loudly (a hole, a flash): seed 40's auto camera hits a coast
+# and reads smax 42%, so this is an alarm at 55%, not a quality score.
+#
 # frame_ms is the cost side, which no pixel diff can see: p50/p99/max of every
 # rendered frame during the probe, including the streaming bursts. A renderer
 # that is stable and correct but stalls for 200 ms has failed the player just as
@@ -60,12 +69,14 @@ for s in "$@"; do
         cull=$(echo "$line"    | sed -n 's/.* cull=\([0-9.]*\)%.*/\1/p')
         lod=$(echo "$line"     | sed -n 's/.* lod=\([0-9.]*\)%.*/\1/p')
         lodmax=$(echo "$line"  | sed -n 's/.* lodmax=\([0-9]*\).*/\1/p')
+        sprint=$(echo "$line"  | sed -n 's/.* sprint=\([0-9.]*\)%.*/\1/p')
+        smax=$(echo "$line"    | sed -n 's/.* smax=\([0-9.]*\)%.*/\1/p')
         p99=$(echo "$line"     | sed -n 's/.* p99=\([0-9.]*\).*/\1/p')
         fmax=$(echo "$line"    | sed -n 's/.* max=\([0-9.]*\).*/\1/p')
         awk -v a="$static" -v b="$walk" -v c="$rebuild" -v d="$cull" \
-            -v e="$lod" -v f="$lodmax" -v g="$p99" -v h="$fmax" \
-            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210 || g > 40.0 || h > 120.0) exit 1 }' || {
-            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax p99=${p99}ms max=${fmax}ms)"
+            -v e="$lod" -v f="$lodmax" -v g="$p99" -v h="$fmax" -v i="$smax" \
+            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210 || g > 40.0 || h > 120.0 || i > 55.0) exit 1 }' || {
+            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax sprint=$sprint% smax=$smax% p99=${p99}ms max=${fmax}ms)"
             fail=1
         }
     done

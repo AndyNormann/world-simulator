@@ -310,6 +310,13 @@ alone can silently produce a header that does not match the headers.
   frame after `world_ready()` equals the frame before. That must be 0.00%.
 - **`--flicker`'s `lod` column is measured after a forced rebuild**, because
   setting `lod_clamp` does nothing until the streamer re-queues.
+- **A tier swap is not a pop in motion, and that is measured, not assumed.** The
+  `sprint` column is 1.5 s at shift speed (330 units, enough to cross a band
+  edge); with `NOLOD=1`, which removes tier changes entirely, seed 1 reads
+  18.97% mean / 24.86% worst either way. Both band boundaries are 4000 and 8000
+  units out, where a 24-cell chunk is a few pixels, so what `lod` measures is a
+  settled appearance difference (the low-poly look), not something to
+  cross-fade. Do not build geomorphing for it; there is nothing to see.
 
 - **Structural counters are asserted, not eyeballed.** `overflow` counts chunks
   that dropped geometry for lack of vertex budget (`break` on `MAX_CHUNK_VERTS`

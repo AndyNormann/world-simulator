@@ -511,6 +511,26 @@ re-recorded; that relocation is the placement working, not a bug in it.
   byte-identical, which is the acceptance criterion satisfied by accident of
   how the shading is sampled rather than by design.
 
+## Two "open items" that were measured away
+
+Both were on the parallel list as work items; both were closed by measuring
+first, which is cheaper than a slice.
+
+**"Decouple the water from the terrain mesh."** Everything within 4000 units is
+tier 1, and tier 1 is one cell -- 14.9 units -- with `chunk_build` already
+holding the shoreline at 15 units ("keep the shoreline readable"). A water
+lattice finer than that would draw a surface over a bed sampled more coarsely,
+which is the same class of bug as the one it was meant to fix. The real defect
+that looked like water resolution was the bed chord above (see the commit that
+sinks the bed under water): the shore was not too coarse, one facet was 150
+units across.
+
+**"Cross-fade the LOD tiers."** `--flicker`'s new `sprint` column (1.5 s at
+shift speed) reads 18.97% / 24.86% with tiers and 18.98% / 24.85% with
+`NOLOD=1`, i.e. tier changes contribute nothing you can see while moving: both
+boundaries are 4000 and 8000 units away. `lod`'s 8.4% is a settled difference
+between two low-poly looks, like the facet shade, not a pop.
+
 ## The shadow is a texture now (found by the lod column)
 
 The horizon field was baked per world (see below) but still *delivered* through
