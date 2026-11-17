@@ -583,6 +583,165 @@ What is left of the tier-swap number is the look, measured: 9.0% -> 6.4% with th
 per-facet shade forced off, so two thirds of it is the deliberate ±18% facet
 shade (a coarser mesh picks different facets) and the rest is LOD geometry.
 
+## Making the renderer solid — the plan
+
+Everything above was found by looking at a picture and chasing it. That is why the
+same families keep coming back: a *class* of defect is only ever closed by a
+number that fails when it returns. This section is the roadmap that closes the
+classes rather than the instances, in the order that pays.
+
+### The three reported families, named
+
+1. **A surface that is not where its colour thinks it is.** A facet gets one
+   colour sampled at its centroid and three corners somewhere else, so a facet
+   spanning the shore is painted with the deep-bed navy, one bridging a cliff top
+   is painted with meadow green, and both land as a slab that reads as a piece of
+   foreign geometry. Seen at seed 1 on every island foot, and as green facets on
+   the rock wall at the 003 camera.
+2. **A mesh that has facets nobody designed.** The fill is a Delaunay of a
+   jittered point set: along a chunk border it produces 100-150 unit triangles
+   (the border ring is exactly collinear, the interior's spacing rule keeps its
+   candidates a facet-width away from it), and the colour/water/normal of such a
+   facet are each decided from something that does not describe it. Long facets
+   are the *mechanism* behind family 1 and behind the water bars.
+3. **LOD seams that separate instead of joining.** A skirt closes a *gap*
+   between two tiers; nothing closes a *step*, where the coarse chunk's chord
+   stands above the fine mesh beside it. That is the shelf at the foot of the
+   peaks, and it is the only remaining candidate for "pops when I fly".
+
+Plus two shading discontinuities that are cheap: the sea plane has no baked
+bounce while a lake one metre away does (it renders darker, hard-edged), and the
+horizon field is baked 4 cells apart (59 units), so a penumbra is a 59-unit
+gradient even though it is now sampled per fragment.
+
+### Targets — this is what "done" means
+
+| metric (800x450, ssaa 2) | today | target |
+|---|---|---|
+| `static` | 0.00% | 0.00% |
+| `yaw` / `pitch` (ground camera) | 0.77 / 1.20% | <= 0.5 / 0.5% |
+| `walk` ground / high | 2.74 / 0.98% | <= 2.0 / 1.0% |
+| `pop`: single frame, TAA history reset | not measured | 0.00% standing still |
+| `fly`: worst frame over a scripted flight | not measured | <= 5%, and only where geometry enters the frame |
+| `seam`: lod 1 vs 2 vs 4, band around chunk borders | 8.4% full frame | <= 1% of the band |
+| `frame_ms` p99 | 10.5 ms | <= 16.6 ms (60 Hz) |
+| counters `overflow` `trioverflow` `ptoverflow` `nonfinite` | 0, asserted | 0, asserted |
+| new: `edge_long` `tri_tiny` `unused_pts` `wet_col_dry` `seam_step` | not measured | 0, asserted |
+
+### P0 — the gates for all three (1 session)
+
+Nothing below is verifiable without this, and the last five fixes in this file
+were found with eyes rather than tests.
+
+- `replays/artifacts.txt`: the seven reported cameras plus the lake camera, the
+  river camera and the waterfall camera, each rendering into `build/shots/` with
+  the structural counters asserted. `tools/goldens.sh` grows a second set from it,
+  so each fix is pinned against a picture that used to be wrong.
+- `--flicker` gains **`pop`**: settle with `taa_n`/`prev_vp_valid` cleared every
+  frame, so the number is the *un-smoothed* single-frame change. Every existing
+  column measures a converged frame, which is exactly what hides a pop.
+- `--flicker` gains **`fly`**: a scripted 3-axis flight (1 s forward at shift
+  speed, 1 s yaw sweep, 1 s climb) reporting the worst single frame. This is the
+  "flying around" report, made deterministic.
+- a **`--seam`** mode: render the same view at `lod_clamp` 1, 2 and 4 and diff a
+  band around the chunk borders the camera can see, not the whole frame.
+- `chunk_build` counts five invariants (see targets) into globals, and
+  `replays/smoke.txt` asserts them zero. `edge_long` alone would have caught the
+  Delaunay overflow and the border slivers a week earlier.
+
+Gate: `tools/check.sh --slow` green with the new columns and counters, and the
+new artifact goldens recorded *from the current build* (they are the "before").
+
+### P1 — colour from the facet, not from one point (1 session)
+
+Fix family 1 at its cause. `chunk_build` samples `bake_r/g/b` once, at the
+centroid. Sample it at all three corners and use their **mean** as the facet's
+flat colour: the facet look is unchanged (still one colour per facet), the
+outlier disappears because a facet with two dry corners and one at sea level can
+no longer be 100% submarine navy. Then assert the invariant: *no facet whose
+corners are all above the waterline may take a colour whose sample cell is
+underwater*. That is `wet_col_dry` in the counter list, and it is the exact bug.
+
+Risk: every steep slope shifts slightly; re-record goldens and compare mean
+luminance per view numerically (a resized composite has lied before).
+
+### P2 — no facet nobody designed (1-2 sessions)
+
+- Fill the band between the border ring and the interior with an inset ring of
+  points (tried once: it changes the fill, and it removes the structural
+  exemption below, but it did not move the sampled artifact by itself -- so it
+  lands *with* the counter that proves it).
+- Let the refinement pass split a border-adjacent long triangle by inserting an
+  **interior** point, never a point on the shared chain (the chain must stay
+  identical in both chunks).
+- Assert `edge_long == 0` (longest edge <= 2 x the tier's spacing) and
+  `tri_tiny == 0` (area >= 4 units^2) and `unused_pts == 0`.
+
+Cost: some more points near borders; `build=` time is measured by the stats line
+and must stay under ~1.2 s async.
+
+### P3 — water is one continuous surface (2 sessions)
+
+- **A level field, not a per-facet maximum.** Today a facet takes the highest
+  `h_fill` of its corners; two neighbouring facets can therefore disagree at a
+  shared edge. Interpolate the level from the cell field per corner instead, and
+  assert level continuity across every shared edge (<= 0.01).
+- **Refine what is wet.** Any wet facet longer than ~1.5 cells is subdivided --
+  bed and plane together, through the same polygon -- so the waterline gains
+  resolution without the bed/plane fight that made the earlier "finer water"
+  idea unsafe. This is the good half of that deferred item.
+- **Falls are their own geometry**: one stretched strip along the channel's steep
+  reach instead of a tilted per-facet plane. The dark wedge at the foot of a
+  cascade is a fall plane meeting a lake; a strip that ends above the water ends
+  it.
+- **The sea plane takes a sky bounce** like every other water surface (it is two
+  triangles with no bake, which is why it is darker than the lake beside it), and
+  stays a single quad for cost.
+
+### P4 — LOD seams: join, do not separate (1 session)
+
+- **Stitch ring**: every chunk's border ring is generated at step 1 whatever the
+  tier. ~200 extra points on a step-4 chunk (7% more), and the coarse chunk's
+  boundary then matches its neighbour *exactly* -- no gap to skirt and, the point
+  of it, no step to see.
+- Measure `seam` at lod 1/2/4; target <= 1% of the band.
+- Geomorphing stays off the list: `sprint` reads 18.97% with tiers and 18.98%
+  with `NOLOD=1`, so a tier swap contributes nothing while moving. If `fly` (P0)
+  says otherwise afterwards, that measurement is the reason to revisit.
+
+### P5 — light at pixel resolution (1 session)
+
+- Bake the horizon field at 2 cells (592^2 x 8 halfs x 2 images, ~5.6 MB, ~50M
+  marches on the builder thread): the remaining shadow banding is the 59-unit
+  lattice showing through a per-fragment sample. Measure the bake; if it is over
+  a second, bake at 3 cells or split it across the builder's first frames.
+- Facet shade is the largest *deliberate* frame-to-frame term (+-18% per facet).
+  Decide with numbers: if `walk` after P1-P4 is above 2%, offer +-12% and a
+  smaller cell so the steps are finer, then re-measure.
+
+### P6 — the last shading seams (half session)
+
+Sea/water bounce, water specular fade with distance, and the fog band where decor
+(sea, clouds, birds) meets terrain. All three are "same physical thing, two code
+paths" and all three are visible as a hard edge if you look.
+
+### P7 — make it a gate, not a habit (half session)
+
+`tools/solid.sh` = `check.sh --slow` plus artifacts, `fly`, `seam`, `pop`; wire it
+into `check.sh --slow` so the definition of done in AGENTS.md includes the new
+numbers. Then the doc stops being a list of things to remember.
+
+### Deliberately not planned
+
+- MSAA: the temporal pass has to sample depth, so a multisampled target cannot be
+  the scene.
+- Alpha-blended foliage: needs cards, sorting and a blending policy for the whole
+  pass; TAA already softens the hard edges, and the "black specks" that motivated
+  it were terrain.
+- Motion vectors and a render graph: this renderer is one scene pass plus TAA,
+  and the seams that hurt are geometry, not reprojection.
+- Geomorphing: see P4 -- measured as invisible while moving.
+
 ## Rules that must not be broken by accident
 
 1. Anything indexed by world cell is a bug (see #4).
