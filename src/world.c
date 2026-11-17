@@ -2163,9 +2163,36 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         if (vcount + 3 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
         const float *bcp = bnc_pt[dt[k].v[0]];
         float nrm[3] = { nx_[k], ny_[k], nz_[k] };
+        /* The bed under a water surface is sunk to just below it wherever the
+           facet's own centre is underwater. Those vertices are never seen --
+           the plane covers them -- and leaving them high is what drew a strip
+           of sand lying across a lake: the mesh is a Delaunay of a jittered
+           point set, so a facet can be 100-150 units across along a chunk
+           border, its chord bridges from a 408 ridge to 393 of lake bed, the
+           chord stands above the water, the water is clipped against it, and
+           the chord paints a bar. Sinking is safe because facets do not share
+           vertices: the neighbouring shoreline facet keeps its own, and the
+           waterline is exactly where a facet's centre is still dry. */
+        float bh[3];
+        int sink = 0;
         for (int e = 0; e < 3; e++) {
             int id = dt[k].v[e];
-            float p[3] = { pts_x[id], sample_height(pts_x[id], pts_z[id]), pts_z[id] };
+            bh[e] = sample_height(pts_x[id], pts_z[id]);
+        }
+        if (tri_wet[k]) {
+            float mx = (pts_x[dt[k].v[0]] + pts_x[dt[k].v[1]] + pts_x[dt[k].v[2]]) / 3.0f;
+            float mz = (pts_z[dt[k].v[0]] + pts_z[dt[k].v[1]] + pts_z[dt[k].v[2]]) / 3.0f;
+            float cen = sample_height(mx, mz);
+            sink = cen < tri_lvl[k][0] - 0.02f;
+            if (sink)
+                for (int e = 0; e < 3; e++) {
+                    float cap = tri_lvl[k][e] - 0.05f;
+                    if (bh[e] > cap) bh[e] = cap;
+                }
+        }
+        for (int e = 0; e < 3; e++) {
+            int id = dt[k].v[e];
+            float p[3] = { pts_x[id], bh[e], pts_z[id] };
             push_vert(p, nrm, tri_col[k], 0.0f, 0.0f, 0.0f, 0.0f, bcp);
         }
         /* The water surface, clipped against the bed it covers. Without the

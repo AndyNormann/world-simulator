@@ -330,6 +330,16 @@ alone can silently produce a header that does not match the headers.
   terrain facet with `WATER_COL` again: that is what made every water artifact --
   stripes along the carve, shadow blades, waterline blades, walls at chunk
   boundaries, teal ledges on sloped reaches -- and they all come back together.
+- **Bed vertices under a water surface are sunk to just below it.** The mesh
+  is a Delaunay of a jittered point set, so a facet can be 100-150 units across
+  along a chunk border; its *chord* can bridge from a ridge 7 units above the
+  lake to bed 8 below, the chord stands through the water plane, the water is
+  clipped against it, and the chord paints a bar across the lake -- a straight
+  sand line that followed the chunk grid and cost seed 1's ground view 6.6% of
+  its sub-pixel stability. `chunk_build` caps a wet facet's bed vertices to just
+  under `tri_lvl` when the facet's own centre is underwater. Safe because facets
+  share no vertices: the shoreline facet next door keeps its own copy, and the
+  waterline is exactly where a facet's centre is still dry.
 - **The plane is clipped against the bed** (`chunk_build`'s emit loop) so the
   waterline is an edge wherever the bed crosses the level. Do not remove the
   clip: without it a facet straddling the waterline draws its plane under the
