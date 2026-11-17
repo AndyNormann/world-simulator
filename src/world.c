@@ -1112,7 +1112,15 @@ void settle_lakes(void) {
                lakes at different fills meet, a bed lowered under the higher one
                still stands above the lower one's surface and shows through it as
                a strip of sand. */
-            float lv = lake_cell[i] ? h_fill[i] : 0.0f;
+            /* Only the cells the flood actually called water. The one-cell ring
+               used to be lowered as well, to keep a mesh chord from bridging a
+               lowered cell to a dry one and standing through the plane -- but a
+               lowered *ring* is a sunk bank: the shoreline floods by however
+               far it was dropped, which at 2.5 units swallowed a strip of
+               meadow. Facets sink their own bed vertices under the plane now,
+               so the ring can keep its ground. */
+            if (!lake_cell[i]) continue;
+            float lv = h_fill[i];
             for (int dz = -1; dz <= 1; dz++)
                 for (int dx = -1; dx <= 1; dx++) {
                     int ax = xi + dx, az = zi + dz;
@@ -1122,7 +1130,14 @@ void settle_lakes(void) {
                     if (lv <= 0.0f || f < lv) lv = f;
                 }
             if (lv <= 0.0f) continue;
-            if (heights[i] > lv - 2.5f) heights[i] = lv - 2.5f;
+            /* Just under the plane, not 2.5 under it. The deep version was
+               load-bearing only while the bed *was* the waterline: it kept a
+               chord from poking through. Facets now sink their own bed vertices
+               under the plane (see chunk_build), so all this has to do is keep
+               the bed below the surface, and 2.5 units of it is a 2.5-unit
+               cliff at every shore -- seen from above, a dark band lying along
+               the waterline. */
+            if (heights[i] > lv - 0.6f) heights[i] = lv - 0.6f;
         }
     }
 }
@@ -1921,6 +1936,21 @@ float facet_shade(float nx, float ny, float nz, float off, float x, float z) {
 
 /* Build one chunk from scratch and return its vertex word count. Runs on the
    builder thread; chunk_verts is this thread's scratch. */
+/* Emit a convex polygon (already in x, z with a per-point y) as a triangle
+   fan. The water and the bed are both emitted through this, on the same
+   polygon, so their common edge cannot disagree. */
+static void emit_fan(int nv, const float xz[5][2], const float *y, const float *nrm,
+                     const float *col, float fx, float fz, const float *bc) {
+    for (int t = 1; t + 1 < nv; t++) {
+        float a[3] = { xz[0][0],  y[0],  xz[0][1]  };
+        float b[3] = { xz[t][0],  y[t],  xz[t][1]  };
+        float c[3] = { xz[t+1][0], y[t+1], xz[t+1][1] };
+        push_vert(a, nrm, col, 0.0f, 0.0f, fx, fz, bc);
+        push_vert(b, nrm, col, 0.0f, 0.0f, fx, fz, bc);
+        push_vert(c, nrm, col, 0.0f, 0.0f, fx, fz, bc);
+    }
+}
+
 int chunk_build(int ci, int step, unsigned seed, const float *cr,
                        const float *cg, const float *cb) {
     const int cx = chunks[ci].cx, cz = chunks[ci].cz;
@@ -1997,7 +2027,39 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         float py = sample_height(pts_x[i], pts_z[i]);
         bounce_at(pts_x[i], pts_z[i], py, cr, cg, cb, bnc_pt[i]);
     }
-    delaunay();
+    /* Refine the fill before anything is coloured. A facet whose edge is much
+       longer than this tier's spacing is one the point set left a gap under --
+       the border ring's empty band, or a dedupe radius larger than the spacing
+       -- and the triangulation spans it with a chord: a facet can bridge a
+       cliff top to a wall 100 units below, or a plateau to the sea, taking its
+       colour from one centre sample and its geometry from three unrelated
+       places. That is the green wedge on a rock face and the sea-coloured plate
+       lying on an island. Splitting such an edge and re-triangulating is cheap
+       (only a minority of facets), keeps the shared border chain untouched, and
+       fixes colour, water class and normal together, because the new points are
+       sampled like every other point. */
+    {
+        const float lim = 3.0f * (float)step * CELL;
+        delaunay();
+        for (int pass = 0; pass < 2; pass++) {
+            int added = 0;
+            for (int k = 0; k < ndt && npts < MAX_PTS - 8; k++) {
+                if (!dt[k].alive) continue;
+                for (int e = 0; e < 3; e++) {
+                    int a = dt[k].v[e], b = dt[k].v[(e + 1) % 3];
+                    if (pt_edge[a] || pt_edge[b]) continue;   /* the shared chain */
+                    float dx = pts_x[a] - pts_x[b], dz = pts_z[a] - pts_z[b];
+                    if (dx*dx + dz*dz < lim * lim) continue;
+                    int before = npts;
+                    add_point((pts_x[a] + pts_x[b]) * 0.5f,
+                              (pts_z[a] + pts_z[b]) * 0.5f, 1.0f);
+                    if (npts > before) added++;
+                }
+            }
+            if (!added) break;
+            delaunay();
+        }
+    }
 
     int ntri = 0;
     for (int k = 0; k < ndt; k++) {
@@ -2180,54 +2242,26 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         if (vcount + 3 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
         const float *bcp = bnc_pt[dt[k].v[0]];
         float nrm[3] = { nx_[k], ny_[k], nz_[k] };
-        /* The bed under a water surface is sunk to just below it wherever the
-           facet's own centre is underwater. Those vertices are never seen --
-           the plane covers them -- and leaving them high is what drew a strip
-           of sand lying across a lake: the mesh is a Delaunay of a jittered
-           point set, so a facet can be 100-150 units across along a chunk
-           border, its chord bridges from a 408 ridge to 393 of lake bed, the
-           chord stands above the water, the water is clipped against it, and
-           the chord paints a bar. Sinking is safe because facets do not share
-           vertices: the neighbouring shoreline facet keeps its own, and the
-           waterline is exactly where a facet's centre is still dry. */
-        float bh[3];
-        int sink = 0;
-        for (int e = 0; e < 3; e++) {
-            int id = dt[k].v[e];
-            bh[e] = sample_height(pts_x[id], pts_z[id]);
-        }
-        if (tri_wet[k]) {
-            float mx = (pts_x[dt[k].v[0]] + pts_x[dt[k].v[1]] + pts_x[dt[k].v[2]]) / 3.0f;
-            float mz = (pts_z[dt[k].v[0]] + pts_z[dt[k].v[1]] + pts_z[dt[k].v[2]]) / 3.0f;
-            float cen = sample_height(mx, mz);
-            sink = cen < tri_lvl[k][0] - 0.02f;
-            if (sink)
-                for (int e = 0; e < 3; e++) {
-                    float cap = tri_lvl[k][e] - 0.05f;
-                    if (bh[e] > cap) bh[e] = cap;
-                }
-        }
-        for (int e = 0; e < 3; e++) {
-            int id = dt[k].v[e];
-            float p[3] = { pts_x[id], bh[e], pts_z[id] };
-            push_vert(p, nrm, tri_col[k], 0.0f, 0.0f, 0.0f, 0.0f, bcp);
-        }
-        /* The water surface, clipped against the bed it covers. Without the
-           clip, any facet straddling the waterline -- its centre in a lake cell,
-           one corner up the bank -- is a plane a couple of units under the
-           ground at that corner, and the ground shows through it as a thin strip
-           of sand. This is what makes the waterline an edge instead of a
-           per-facet guess. */
-        if (tri_wet[k] && vcount + 5 * 3 * VERT_FLOATS <= MAX_CHUNK_VERTS * VERT_FLOATS) {
-            const float up[3] = { 0.0f, 1.0f, 0.0f };
-            const float *wc = tri_wet[k] == 2 ? FOAM_COL : WATER_COL;
-            float ix[5][2], iy[5];
-            int nv = 0;
-            for (int e = 0; e < 3 && tri_wet[k] != 2; e++) {
+        /* The waterline is one polygon, used by both surfaces.
+           The facet is cut where the bed crosses the surface level; the side
+           whose bed is below the plane is underwater. A facet that is *mostly*
+           underwater may still have a corner far above the plane -- the mesh is
+           a Delaunay of a jittered point set, so a 100-unit facet can chord from
+           a ridge into a lake -- and that corner is an artefact of the facet's
+           size, not a beach. Such a facet hands the whole thing to the water:
+           the bed is drawn only on the underwater polygon, the plane covers all
+           of it, and nothing pokes through. A mostly-dry facet keeps its bed and
+           gets the water on the underwater polygon only, so the waterline is
+           exactly where the bed crosses. Neither case moves a vertex, so no
+           step is left at the shore. */
+        float ix[5][2], iy[5];
+        int nv = 0, wet = tri_wet[k], sub = 0;
+        if (wet) {
+            for (int e = 0; e < 3; e++) {
                 int id = dt[k].v[e], jd = dt[k].v[(e + 1) % 3];
                 float bx = pts_x[id], bz = pts_z[id];
                 float jx = pts_x[jd], jz = pts_z[jd];
-                float da = tri_lvl[k][e]     - sample_height(bx, bz);
+                float da = tri_lvl[k][e]           - sample_height(bx, bz);
                 float db = tri_lvl[k][(e + 1) % 3] - sample_height(jx, jz);
                 if (da >= 0.0f) {
                     ix[nv][0] = bx; ix[nv][1] = bz; iy[nv] = tri_lvl[k][e]; nv++;
@@ -2240,20 +2274,40 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                     nv++;
                 }
             }
-            if (tri_wet[k] == 2) {          /* a fall: the whole facet, unclipped */
-                nv = 3;
+            float mx = (pts_x[dt[k].v[0]] + pts_x[dt[k].v[1]] + pts_x[dt[k].v[2]]) / 3.0f;
+            float mz = (pts_z[dt[k].v[0]] + pts_z[dt[k].v[1]] + pts_z[dt[k].v[2]]) / 3.0f;
+            sub = (wet == 2) || (sample_height(mx, mz) < tri_lvl[k][0] - 0.02f);
+        }
+        if (wet && sub) {
+            /* a fall hangs off the bed rather than lying on it, so it is not
+               clipped at all */
+            for (int e = 0; e < 3; e++) {
+                int id = dt[k].v[e];
+                ix[e][0] = pts_x[id]; ix[e][1] = pts_z[id]; iy[e] = sample_height(pts_x[id], pts_z[id]);
+            }
+            if (wet == 2) nv = 3;
+            emit_fan(nv, ix, iy, nrm, tri_col[k], 0.0f, 0.0f, bcp);
+            {
+                const float up[3] = { 0.0f, 1.0f, 0.0f };
+                float wx[3][2], wy[3];
                 for (int e = 0; e < 3; e++) {
                     int id = dt[k].v[e];
-                    ix[e][0] = pts_x[id]; ix[e][1] = pts_z[id]; iy[e] = tri_lvl[k][e];
+                    wx[e][0] = pts_x[id]; wx[e][1] = pts_z[id]; wy[e] = tri_lvl[k][e];
                 }
+                emit_fan(3, wx, wy, up, wet == 2 ? FOAM_COL : WATER_COL,
+                         tri_flow[k][0], tri_flow[k][1], bcp);
             }
-            for (int t = 1; t + 1 < nv; t++) {
-                float a[3] = { ix[0][0],   iy[0],   ix[0][1]   };
-                float b3[3] = { ix[t][0],  iy[t],   ix[t][1]  };
-                float c3[3] = { ix[t+1][0], iy[t+1], ix[t+1][1] };
-                push_vert(a,  up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], bcp);
-                push_vert(b3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], bcp);
-                push_vert(c3, up, wc, 0.0f, 0.0f, tri_flow[k][0], tri_flow[k][1], bcp);
+        } else {
+            float bx[3][2], by[3];
+            for (int e = 0; e < 3; e++) {
+                int id = dt[k].v[e];
+                bx[e][0] = pts_x[id]; bx[e][1] = pts_z[id];
+                by[e] = sample_height(pts_x[id], pts_z[id]);
+            }
+            emit_fan(3, bx, by, nrm, tri_col[k], 0.0f, 0.0f, bcp);
+            if (wet) {
+                const float up[3] = { 0.0f, 1.0f, 0.0f };
+                emit_fan(nv, ix, iy, up, WATER_COL, tri_flow[k][0], tri_flow[k][1], bcp);
             }
         }
     }

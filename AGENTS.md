@@ -356,6 +356,20 @@ alone can silently produce a header that does not match the headers.
   under `tri_lvl` when the facet's own centre is underwater. Safe because facets
   share no vertices: the shoreline facet next door keeps its own copy, and the
   waterline is exactly where a facet's centre is still dry.
+- **One polygon carries the waterline, and both surfaces use it.** `chunk_build`
+  cuts the facet where the bed crosses the surface level and then decides: a
+  facet whose *centre* is underwater hands the whole facet to the water (the bed
+  is drawn only on the underwater polygon, so a chord from a ridge into a lake
+  cannot paint a bar and nothing pokes through), a facet whose centre is dry
+  keeps its bed and gets water on the underwater polygon only. Neither case
+  moves a vertex -- an earlier version capped the high corner at the plane, which
+  put a vertical step at every shore, i.e. a dark band along the waterline.
+- **`settle_lakes` lowers lake cells only, and only just under their fill.** The
+  one-cell ring used to be lowered too, and at 2.5 units it was a sunk bank: the
+  shoreline flooded a strip of meadow by however far the ring was dropped. That
+  was load-bearing only while the bed *was* the waterline; the shared-polygon
+  rule above replaced it. Lowering lake cells (not the ring) keeps the mask's
+  interior below the surface, which is what the plane needs.
 - **The plane is clipped against the bed** (`chunk_build`'s emit loop) so the
   waterline is an edge wherever the bed crosses the level. Do not remove the
   clip: without it a facet straddling the waterline draws its plane under the
