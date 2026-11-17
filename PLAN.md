@@ -1427,6 +1427,53 @@ mean difference. Note that the gate would have *passed* without re-recording —
 that is an argument for re-recording, not against it, because a 0.28% drift that
 nobody claims would otherwise sit inside the tolerance forever.
 
+### Two regressions found by playing, and what they say
+
+Both were reported from a window, not from the gate, and each exposes a
+different hole in how the gate is built.
+
+**1. The lakes had no water — a commit left a branch empty.** `1c99c4d` (falls as
+a sheet on the rock) moved the body of the `wet && sub` emit branch into the new
+`wet == 2` case and left `else if (wet && sub) { }` behind. That branch is the
+*default* case for lake water: a facet whose bed is below the level is mostly
+underwater, which is almost every lake facet. So nearly every lake emitted
+nothing at all and the player saw the far cliff through the lake — "see through"
+was literal. Measured: water in the lake view 97.3% → **26.7%**; after the fix,
+99.7%.
+
+The gate did not catch it, and the reason is worse than a missing assert: the
+`low` golden *did* move, by exactly **0.472%**, and it was re-recorded in that
+commit with the explanation "a real look change in the two views with a fall".
+The number was seen and explained away with the wrong mechanism. A re-record
+needs the mechanism, not the delta. The restored goldens now move `low` back by
+the same 0.472%, which is the receipt.
+
+New gate: `nowater` counts wet facets that emitted no water surface, and it is an
+**invariant** (`== 0`), not an alarm — every emit branch reachable for a wet
+facet must produce a plane. The commit also introduced the mechanism that had
+been missing: the emit chain is a `if / else if / else` where an empty branch is
+a hole in the world, so the counter is checked per facet rather than per class.
+
+**2. The overlay's "rebuild" button segfaulted, every time.** `world_rebuild()`
+tears the overlay down (`ui_shutdown` → `simgui_shutdown`) and the button called
+it from *inside* an ImGui frame; the next `ImGui::SameLine()` on the following
+line was a use-after-free. Reproduced as exit 139 by calling the same function
+at the same point, while the identical rebuild between frames exits 0.
+
+The fix is structural rather than a guard: `world_rebuild` is now **static** to
+`render.c` and cannot be called directly from anywhere else. Callers ask with
+`request_world_rebuild(seed, world)`, and `frame()` performs it between frames —
+the same path `--rebuild` already used, which is why that flag never crashed.
+`terrain_force` is part of the request, so the archetype the button picks applies
+to the rebuild (it used to work only because the button assigned the global
+first).
+
+The lesson for the gate: this class — *a teardown called from inside the thing it
+tears down* — is not visible to a headless renderer at all, and `--rebuild` only
+covered it because the flag happened to run between frames. Anything the overlay
+can trigger needs a headless-expressible equivalent, or it is untested by
+construction.
+
 ### Session A status
 
 Closed: the dark-chord class (invariant), the vertex-cap landmine (gate), the

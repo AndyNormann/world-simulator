@@ -719,7 +719,31 @@ void init(void) {
    after an in-window rebuild must equal a shot from a fresh process at the same
    (seed, world, camera, hour). A world-static that this misses shows up as a
    pixel difference, not as a mystery six months later. */
-void world_rebuild(unsigned seed) {
+/* A rebuild tears the device, the streamer and the overlay down and builds
+   them again, so it cannot run in the middle of anything else. The overlay's
+   "rebuild" button runs inside an ImGui frame, and destroying the context there
+   is a use-after-free on the very next ImGui call -- it segfaulted every time
+   (reproduced: SIGSEGV, and the same rebuild from between frames is fine). So
+   the only way in is a request, and frame() performs it between frames. */
+static void world_rebuild(unsigned seed);
+static unsigned rebuild_req_seed;
+static int rebuild_req_world = -2;      /* -2: keep terrain_force as it is */
+static int rebuild_req;
+
+void request_world_rebuild(unsigned seed, int world) {
+    rebuild_req_seed = seed;
+    rebuild_req_world = world;
+    rebuild_req = 1;
+}
+
+void world_rebuild_if_requested(void) {
+    if (!rebuild_req) return;
+    rebuild_req = 0;
+    if (rebuild_req_world != -2) terrain_force = rebuild_req_world;
+    world_rebuild(rebuild_req_seed);
+}
+
+static void world_rebuild(unsigned seed) {
     stop_streamer();
     ui_shutdown();
     sg_shutdown();                 /* chunk buffers, decor vbuf, targets, shaders */
@@ -1525,9 +1549,9 @@ static void capture_current(const char *path) {
     /* the worst chunk, not a total: these describe the fill, and a total would
        describe the camera instead */
     printf("structure: edgelong=%d tritiny=%d unusedpts=%d wetcoldry=%d seamgap=%d "
-           "grounderr=%.2f groundfar=%.2f relit=%d chunkverts=%d%% warn=%d\n",
+           "grounderr=%.2f groundfar=%.2f relit=%d nowater=%d chunkverts=%d%% warn=%d\n",
            c_edge_long, c_tri_tiny, c_unused_pts, c_wet_col_dry, c_seam_gap,
-           c_ground_err, c_ground_err_far, c_relit, c_chunk_verts, gfx_warn);
+           c_ground_err, c_ground_err_far, c_relit, c_no_water, c_chunk_verts, gfx_warn);
     if (seg_n > 0)
         printf("rivers=%d  segments=%d  level %.1f..%.1f\n", river_count, seg_n, river_hi, river_lo);
     else

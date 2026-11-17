@@ -26,6 +26,7 @@ assert tris > 1000
 assert warned == 0
 # The vertex budget is a hard cap that silently truncates a chunk's geometry.
 assert chunkverts < 100
+assert nowater == 0            # every wet facet emits a water surface
 # Every world builds inside its budget; the number is an alarm, not a target.
 assert buildms < 2000
 assert chunks_drawn > 20

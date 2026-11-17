@@ -71,3 +71,7 @@ assert unusedpts <= 6
 # prevalence of the dark-chord mechanism, not a defect count. It is 49-59 here;
 # a jump means the fill is producing chords faster than the fill fixes them.
 assert relit <= 90
+# An invariant, not an alarm: a facet that the builder called water must emit a
+# water surface. This is 0; the day it is not, the lake has a hole in it and the
+# player sees the far cliff through it.
+assert nowater == 0

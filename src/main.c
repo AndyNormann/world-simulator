@@ -72,8 +72,9 @@ void frame(void) {
     static int rebuilt = 0;
     if (rebuild_seed >= 0 && !rebuilt && frame_count > 10) {
         rebuilt = 1;
-        world_rebuild((unsigned)rebuild_seed);
+        request_world_rebuild((unsigned)rebuild_seed, terrain_force);
     }
+    world_rebuild_if_requested();      /* also picks up the overlay's button */
     /* --live FILE: the same thing F2 does, scriptable, so the windowed
        screenshot path can be gated against `game shot` */
     if (ui_at_start && frame_count == 3) { ui_at_start = 0; ui_toggle(); }

@@ -2223,7 +2223,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         }
     }
 
-    int ntri = 0, relit = 0;
+    int ntri = 0, relit = 0, nowater_n = 0;
     for (int k = 0; k < ndt; k++) {
         if (!dt[k].alive) continue;
         float ax = pts_x[dt[k].v[0]], az = pts_z[dt[k].v[0]];
@@ -2388,6 +2388,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            that contradicts the ground under it" holds by construction now, so
            this is the alarm that says the mechanism is not spreading. */
         if (relit > c_relit) c_relit = relit;
+        if (nowater_n > c_no_water) c_no_water = nowater_n;
     }
 
     /* One river query per vertex, not per facet: the water paint wants the
@@ -2597,6 +2598,12 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            step is left at the shore. */
         float ix[5][2], iy[5];
         int nv = 0, wet = tri_wet[k], sub = 0;
+        /* A wet facet that ends up emitting no water surface is a hole in the
+           water: the player sees whatever is behind it (a far cliff, the sky).
+           This is the counter that would have caught the empty `wet && sub`
+           branch, and it is an invariant, not an alarm -- every branch below
+           that can be taken for a wet facet must emit a plane. */
+        int drew_water = 0;
         if (wet) {
             for (int e = 0; e < 3; e++) {
                 int id = dt[k].v[e], jd = dt[k].v[(e + 1) % 3];
@@ -2642,7 +2649,30 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             emit_fan(3, fx, fy, nrm, fcol, 0.0f, 0.0f, bcp, 0.0f);
             emit_fan(3, wx, wy, nrm, vis_class ? fcol : FOAM_COL,
                      tri_flow[k][0], tri_flow[k][1], bcp, 2.0f);
+            drew_water = 1;
         } else if (wet && sub) {
+            /* Mostly underwater: the whole facet is water, so the plane covers
+               all of it and the bed is drawn under it (a corner that pokes
+               above the level still shows as beach). This branch was left EMPTY
+               by the fall-as-a-sheet change, which moved this body into the new
+               `wet == 2` case and thereby deleted the surface from every lake
+               facet whose bed is below the level -- the lake became a hole you
+               could see the far cliff through. It is the default case for lake
+               water, so it must never be empty. */
+            float bx[3][2], by[3], wx[3][2], wy[3];
+            for (int e = 0; e < 3; e++) {
+                int id = dt[k].v[e];
+                bx[e][0] = wx[e][0] = pts_x[id];
+                bx[e][1] = wx[e][1] = pts_z[id];
+                by[e] = sample_height(pts_x[id], pts_z[id]);
+                wy[e] = tri_lvl[k][e];
+            }
+            emit_fan(3, bx, by, nrm, fcol, 0.0f, 0.0f, bcp, 0.0f);
+            {
+                const float up[3] = { 0.0f, 1.0f, 0.0f };
+                emit_fan(3, wx, wy, up, vis_class ? fcol : WATER_COL,
+                         tri_flow[k][0], tri_flow[k][1], bcp, 1.0f);
+            }
         } else {
             float bx[3][2], by[3];
             for (int e = 0; e < 3; e++) {
@@ -2656,8 +2686,10 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 emit_fan(nv, ix, iy, up, vis_class ? fcol : WATER_COL,
                          tri_flow[k][0], tri_flow[k][1], bcp,
                          wet == 2 ? 2.0f : 1.0f);
+                drew_water = 1;
             }
         }
+        if (wet && !drew_water) nowater_n++;
     }
     /* Skirts. The border ring follows the tier, so a chunk and its neighbour
        only share a vertex chain when their tiers match. Where they differ, the

@@ -121,14 +121,11 @@ void ui_frame(int w, int h) {
         ImGui::Text("%d/%d chunks, %d drawn", nchunks_ready(), NCHUNKS, chunks_drawn);
         ImGui::Text("%d points, %d triangles", mesh_pts, mesh_tris);
         ImGui::TextDisabled("window %dx%d px, dpi %.1f", (int)(w), (int)(h), sapp_dpi_scale());
-        if (ImGui::Button("rebuild")) {
-            terrain_force = world_edit;
-            world_rebuild(seed_edit);
-        }
+        /* Requested, not performed: destroying the imgui context inside its own
+           frame is a use-after-free (it crashed on this exact button). */
+        if (ImGui::Button("rebuild")) request_world_rebuild(seed_edit, world_edit);
         ImGui::SameLine();
-        if (ImGui::Button("rebuild same seed")) {
-            world_rebuild(terrain_seed);
-        }
+        if (ImGui::Button("rebuild same seed")) request_world_rebuild(terrain_seed, terrain_force);
     }
 
     /* --- camera ------------------------------------------------------ */

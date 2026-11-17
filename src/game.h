@@ -235,7 +235,10 @@ int  ui_event(const void *sapp_event);  /* 1 = the overlay consumed it */
 #ifdef __cplusplus
 }
 #endif
-void world_rebuild(unsigned seed);  /* new world in the same window */
+/* A rebuild may only be requested; it is performed between frames. See
+   render.c: calling it inside an ImGui frame is a use-after-free. */
+void request_world_rebuild(unsigned seed, int world);
+void world_rebuild_if_requested(void);
 G(sg_pipeline pip)
 G(sg_pipeline sky_pip)
 G(sg_bindings bindings)
@@ -350,6 +353,7 @@ G(float tri_lvl[MAX_DT][3])
 G(float nx_[MAX_DT], ny_[MAX_DT], nz_[MAX_DT])
 G(float tri_gerr[MAX_DT])   /* facet's plane vs the ground under it, in tier spacings/3 */
 GV(int c_relit,0)           /* facets re-lit by the ground's normal (> 60 deg off) */
+GV(int c_no_water,0)        /* wet facets that emitted no water surface: must be 0 */
 G(pthread_t builder)
 GV(pthread_mutex_t job_mu,PTHREAD_MUTEX_INITIALIZER)
 GV(pthread_cond_t job_cv,PTHREAD_COND_INITIALIZER)
