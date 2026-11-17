@@ -318,6 +318,15 @@ alone can silently produce a header that does not match the headers.
   settled appearance difference (the low-poly look), not something to
   cross-fade. Do not build geomorphing for it; there is nothing to see.
 
+- **`MAX_DT` is a high-water mark, not a budget.** Bowyer-Watson creates a
+  triangle per cavity edge per insertion, so the *cumulative* count is several
+  times the live triangulation; indexing the array by that count made a dense
+  chunk -- a river mouth inside a lake, seen from a metre away -- run out of
+  slots and drop every facet after the cap. The symptom is the whole family this
+  repo keeps rediscovering: the *nearest* chunks (the only ones the player stands
+  in) lose facets and show the sea plane, the bed and the sky through the holes.
+  Dead slots are recycled now (`dt_free`), the array is the size of the live
+  triangulation, and `trioverflow`/`ptoverflow` are asserted zero.
 - **Structural counters are asserted, not eyeballed.** `overflow` counts chunks
   that dropped geometry for lack of vertex budget (`break` on `MAX_CHUNK_VERTS`
   used to truncate a chunk in silence) and `nonfinite` counts NaN heights, trees,

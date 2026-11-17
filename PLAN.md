@@ -511,6 +511,20 @@ re-recorded; that relocation is the placement working, not a bug in it.
   byte-identical, which is the acceptance criterion satisfied by accident of
   how the shading is sampled rather than by design.
 
+## The nearest chunks were quietly losing triangles (found by flying around)
+
+Reported as "an island looks fine from a distance, then as I get closer the grass
+the trees are on turns into patches of water". It is the Delaunay array, not the
+water: `dt[]` is indexed by the *cumulative* triangle count, which for
+Bowyer-Watson is several times the live triangulation, and `dt_add` silently
+returned once it passed `MAX_DT` (5200). A dense chunk -- river mouth inside a
+lake, shore inside the near tier -- lost everything after that point: 523
+triangles at seed 1 with the camera in a boat channel. Holes in the nearest mesh
+show the sea plane and the bed through them, which reads as water in the grass,
+and only from close up, because the far tiers are coarse and never fill the
+array. Dead slots are recycled now; `trioverflow` and `ptoverflow` are asserted
+zero in `replays/smoke.txt` so it cannot come back silently.
+
 ## Two "open items" that were measured away
 
 Both were on the parallel list as work items; both were closed by measuring

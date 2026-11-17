@@ -15,7 +15,9 @@ assert trees > 1000
 # structural health, not looks: no chunk may drop geometry for lack of vertex
 # budget, and no generated field may contain a NaN. Both render silently.
 assert nonfinite == 0
-assert overflow == 0
+assert overflow == 0          # no chunk dropped vertices for lack of budget
+assert trioverflow == 0       # no chunk lost triangles to the Delaunay array
+assert ptoverflow == 0        # no chunk hit the point budget
 shot build/shots/smoke-default.png
 assert tris > 1000
 assert chunks_drawn > 20

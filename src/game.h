@@ -304,6 +304,8 @@ GV(int mesh_pts,0)
    silently: the frame renders, the world is missing a piece, and nothing says
    so. Both counters must be zero; the replays assert it. */
 GV(int mesh_overflow,0)
+GV(int tri_overflow,0)   /* triangles dropped by MAX_DT */
+GV(int pt_overflow,0)    /* points dropped by MAX_PTS */
 GV(int world_nonfinite,0)
 GV(int mesh_tris,0)
 GV(int mesh_facets,0)

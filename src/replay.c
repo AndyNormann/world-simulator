@@ -57,6 +57,8 @@ float key_state(const char *field) {
        generated NaN. Both are silent in the frame and must never be non-zero. */
     if (!strcmp(field, "overflow")) return (float)mesh_overflow;
     if (!strcmp(field, "nonfinite")) return (float)world_nonfinite;
+    if (!strcmp(field, "trioverflow")) return (float)tri_overflow;
+    if (!strcmp(field, "ptoverflow")) return (float)pt_overflow;
     /* the whole heightfield, so a seed sweep can catch a world that generated
        flat, empty or nonsensical without rendering anything */
     if (!strcmp(field, "height_min") || !strcmp(field, "height_max")) {

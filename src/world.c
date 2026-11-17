@@ -1789,9 +1789,22 @@ void emit_water(void) {
 static dtri_t dt[MAX_DT];
 
 
+/* Bowyer-Watson creates a triangle for every edge of the cavity it re-cuts, so
+   the *cumulative* count is several times the number of triangles that survive;
+   this used to be a fixed array indexed by that cumulative count, and a dense
+   chunk (a river mouth inside a lake, seen from a metre away) silently ran out
+   of slots. Everything past the cap was dropped, so the nearest chunks -- the
+   only ones the player ever stands in -- lost facets and showed the bed, the sea
+   plane and sky through the holes. Dead slots are recycled instead: the array is
+   then the size of the live triangulation (~2n) and cannot overflow in practice. */
+static int dt_free = -1;
+
 void dt_add(int a, int b, int c) {
-    if (ndt >= MAX_DT) return;
-    dtri_t *t = &dt[ndt++];
+    int slot;
+    if (dt_free >= 0) { slot = dt_free; dt_free = dt[slot].v[0]; }
+    else if (ndt < MAX_DT) slot = ndt++;
+    else { tri_overflow++; return; }
+    dtri_t *t = &dt[slot];
     t->v[0] = a; t->v[1] = b; t->v[2] = c; t->alive = 1; t->r2 = -1.0f;
     float ax = pts_x[a], az = pts_z[a];
     float bx = pts_x[b], bz = pts_z[b];
@@ -1814,6 +1827,7 @@ void delaunay(void) {
     pts_x[n+1] = 30000.0f; pts_z[n+1] = -30000.0f;
     pts_x[n+2] = 0.0f;     pts_z[n+2] = 30000.0f;
     ndt = 0;
+    dt_free = -1;
     dt_add(n, n+1, n+2);
     static int ea[MAX_DT * 3], eb[MAX_DT * 3];
     for (int i = 0; i < n; i++) {
@@ -1822,7 +1836,6 @@ void delaunay(void) {
             if (!dt[k].alive) continue;
             float dx = pts_x[i] - dt[k].cx, dz = pts_z[i] - dt[k].cz;
             if (dx*dx + dz*dz >= dt[k].r2 - 1e-3f) continue;
-            dt[k].alive = 0;
             for (int e = 0; e < 3; e++) {
                 int a = dt[k].v[e], b = dt[k].v[(e+1) % 3];
                 int found = -1;                       /* shared edge: cancel */
@@ -1834,6 +1847,10 @@ void delaunay(void) {
                     ea[ne] = a; eb[ne] = b; ne++;
                 }
             }
+            /* recycle the slot, but only after its edges have been read out */
+            dt[k].alive = 0;
+            dt[k].v[0] = dt_free;
+            dt_free = k;
         }
         for (int q = 0; q < ne; q++) dt_add(ea[q], eb[q], i);
     }
@@ -1853,7 +1870,7 @@ void delaunay(void) {
    200 units long, which is exactly what that looked like on screen. */
 
 void add_point(float x, float z, float min_d) {
-    if (npts >= MAX_PTS) return;
+    if (npts >= MAX_PTS) { pt_overflow++; return; }
     if (x < clip_x0 - 0.5f || x > clip_x1 + 0.5f) return;
     if (z < clip_z0 - 0.5f || z > clip_z1 + 0.5f) return;
     /* the jitter can push a border point off the heightfield: sampling there
@@ -2614,7 +2631,7 @@ void start_streamer(unsigned seed) {
     jobs_in_flight = 0;
     builder_quit = 0;
     mesh_pts = mesh_tris = mesh_facets = 0;
-    mesh_overflow = 0;
+    mesh_overflow = 0; tri_overflow = 0; pt_overflow = 0;
     builder_t0 = stm_now();
     builder_live = 1;
     builder_started = 1;
