@@ -395,6 +395,18 @@ alone can silently produce a header that does not match the headers.
   seen from, a Fresnel surface reflects the sky, so a fall shaded as ordinary
   water reads as a flat pale ribbon painted down the rock. Falling water
   scatters: it keeps the facet's own light and loses the sky reflection.
+- **A fall is a sheet on the rock, not a plane at the water level.** Emitted at
+  the reach's level per corner, every fall facet hung at its own height and
+  pointed its own way, and a cascade read as a jumble of white plates with the
+  river's teal surface shoved among them. A fall is now the bed polygon offset
+  0.4 units along its own normal and painted foam: continuous, because
+  neighbouring facets share corners, and impossible to disagree with the rock it
+  runs down. A facet standing on end still holds no *tilted* surface.
+- **A stitch ring does not close a LOD seam.** Measured: generating every chunk's
+  border at step 1 whatever the tier costs 68% more points and 68% more builder
+  time and moves the tier-swap difference from 7.4% to 7.1%. A step-4 chunk is a
+  *different triangulation* of the ground, not a coarse copy of the fine one; the
+  border chain was never what you see. Skirts already cover the gap.
 - **A facet standing on end holds no surface.** Steep river facets get `FOAM_COL`
   on the bed instead; a surface there is a blue wall per facet.
 

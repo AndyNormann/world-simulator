@@ -2457,26 +2457,23 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             float mz = (pts_z[dt[k].v[0]] + pts_z[dt[k].v[1]] + pts_z[dt[k].v[2]]) / 3.0f;
             sub = (wet == 2) || (sample_height(mx, mz) < tri_lvl[k][0] - 0.02f);
         }
-        if (wet && sub) {
-            /* a fall hangs off the bed rather than lying on it, so it is not
-               clipped at all */
+        if (wet == 2) {
+            /* A fall is a sheet on the rock, not a plane at the water level.
+               Emitted at the reach's level per corner, every facet hung at a
+               different height and pointed in a different direction, so a
+               cascade read as a jumble of white plates. Glued to the bed with
+               the facet's own normal it is one continuous sheet -- the plates
+               were never in the reach, they were the level field. */
+            float fx[3][2], fy[3], wx[3][2], wy[3];
             for (int e = 0; e < 3; e++) {
                 int id = dt[k].v[e];
-                ix[e][0] = pts_x[id]; ix[e][1] = pts_z[id]; iy[e] = sample_height(pts_x[id], pts_z[id]);
+                fx[e][0] = wx[e][0] = pts_x[id]; fx[e][1] = wx[e][1] = pts_z[id];
+                fy[e] = sample_height(pts_x[id], pts_z[id]);
+                wy[e] = fy[e] + 0.4f;
             }
-            if (wet == 2) nv = 3;
-            emit_fan(nv, ix, iy, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
-            {
-                const float up[3] = { 0.0f, 1.0f, 0.0f };
-                float wx[3][2], wy[3];
-                for (int e = 0; e < 3; e++) {
-                    int id = dt[k].v[e];
-                    wx[e][0] = pts_x[id]; wx[e][1] = pts_z[id]; wy[e] = tri_lvl[k][e];
-                }
-                emit_fan(3, wx, wy, up, wet == 2 ? FOAM_COL : WATER_COL,
-                         tri_flow[k][0], tri_flow[k][1], bcp,
-                         wet == 2 ? 2.0f : 1.0f);
-            }
+            emit_fan(3, fx, fy, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
+            emit_fan(3, wx, wy, nrm, FOAM_COL, tri_flow[k][0], tri_flow[k][1], bcp, 2.0f);
+        } else if (wet && sub) {
         } else {
             float bx[3][2], by[3];
             for (int e = 0; e < 3; e++) {

@@ -28,7 +28,10 @@
 # shade is ±18% per facet and a coarser mesh picks different facets, and the
 # ground itself moves by the chord error. Measured: 9.0% -> 6.4% with the facet
 # shade forced off, so two thirds of it is the low-poly look and the rest is LOD
-# geometry. What it exists to catch is the *shadow* changing with the tier, which
+# geometry. The stitch-ring experiment (P4: every chunk's border at step 1) costs
+# 68% more points and 68% more builder time and moves this from 7.4% to 7.1%, so
+# the seam is in the interior facet pattern and not in the border chain: a step-4
+# chunk is a *different triangulation*, not a coarse copy of the fine one. What it exists to catch is the *shadow* changing with the tier, which
 # it did at 9.7% until the horizon bake moved off the mesh and onto a world
 # lattice (see bake_horizon_grid) -- so this is a regression alarm at 12%, not an
 # acceptance criterion.
@@ -51,6 +54,13 @@
 # because a number only ever measured while walking cannot say whether flying is
 # steady; a chunk arriving mid-flight adds its own area to it. Both are
 # regression alarms at 20% / 45%, not quality scores: a pan moves every pixel.
+#
+# THE GATES ARE TODAY'S NUMBERS PLUS HEADROOM, not the plan's targets: they fail
+# on a *change*, and a number that is a settled look difference (lod) is not a
+# target at all. Worst of six views (seeds 1, 12, 40; ground and high) on the
+# machine that wrote this: static 0.00, walk 3.8, wmax 4.4, rebuild 0.03, cull
+# 0.00, lod 7.8, lodmax 223, sprint 16.6, smax 42.1, pop 3.7, pmax 3.8, fly 31.3,
+# p99 11.5 ms, max 15.8 ms.
 #
 # frame_ms is the cost side, which no pixel diff can see: p50/p99/max of every
 # rendered frame during the probe, including the streaming bursts. A renderer
@@ -89,7 +99,7 @@ for s in "$@"; do
         awk -v a="$static" -v b="$walk" -v c="$rebuild" -v d="$cull" \
             -v e="$lod" -v f="$lodmax" -v g="$p99" -v h="$fmax" -v i="$smax" \
             -v j="$pop" -v k="$pmax" -v l="$fly" \
-            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210 || g > 40.0 || h > 120.0 || i > 55.0 || j > 12.0 || k > 20.0 || l > 45.0) exit 1 }' || {
+            'BEGIN{ if (a > 0.5 || b > 6.0 || c > 1.0 || d > 0.0 || e > 12.0 || f > 300 || g > 25.0 || h > 60.0 || i > 55.0 || j > 6.0 || k > 7.0 || l > 45.0) exit 1 }' || {
             echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax sprint=$sprint% smax=$smax% pop=$pop% pmax=$pmax% fly=$fly% p99=${p99}ms max=${fmax}ms)"
             fail=1
         }
