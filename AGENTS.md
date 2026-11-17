@@ -383,6 +383,18 @@ alone can silently produce a header that does not match the headers.
 - **`close_lakes` fills one-cell cracks in the lake mask.** The river drains
   through the lake, so the flood leaves a dry band across it, and a dry band is a
   strip of bed lying on the water.
+- **A water polygon says it is water; it is not inferred from a flow vector.**
+  `anim.x = -2` is the marker (`emit_flat_up` uses it for the sea), and
+  `emit_fan`'s `kind` sets it for every bed-and-surface pair. The old test was
+  `length(flow) > 0.5`, which a fall whose nearest river segment is degenerate
+  fails -- it has no flow direction at all -- and such a fall was then shaded as
+  *terrain*: a flat pale ribbon lying on the rock, taking the cast shadow a
+  water surface must not take. `anim.y` carries the kind (1 still, 2 falling) and
+  is free because it is the tree sway phase for a non-water vertex.
+- **A fall is white water, not a mirror.** At the grazing angle a cliff face is
+  seen from, a Fresnel surface reflects the sky, so a fall shaded as ordinary
+  water reads as a flat pale ribbon painted down the rock. Falling water
+  scatters: it keeps the facet's own light and loses the sky reflection.
 - **A facet standing on end holds no surface.** Steep river facets get `FOAM_COL`
   on the bed instead; a surface there is a blue wall per facet.
 

@@ -34,6 +34,7 @@ out vec3 v_wpos;
 out vec2 v_flow;
 out vec3 v_bounce;
 out float v_water;
+out float v_fall;
 
 void main(){
     vec3 p = pos;
@@ -74,6 +75,9 @@ void main(){
     }
     v_bounce = (bal / bw) * clamp(u_sunv.y, 0.0, 1.0);
     v_water = (anim.x < 0.5 && (length(flow) > 0.5 || anim.x < -1.5)) ? 1.0 : 0.0;
+    // anim.y is the emitter's own label for a non-tree vertex: 2 means the
+    // surface is *falling*, which is a different material -- see the fragment.
+    v_fall = (v_water > 0.5 && anim.y > 1.5) ? 1.0 : 0.0;
     v_col=col; v_nrm=nrm; v_wpos=pos; v_flow=flow;
     vec4 cp=mvp*vec4(p,1.0); v_depth=cp.w;
     v_suv=cp.xy/max(cp.w,1e-4)*0.5+0.5;
@@ -120,6 +124,7 @@ in vec3 v_wpos;
 in vec2 v_flow;
 in vec3 v_bounce;
 in float v_water;
+in float v_fall;
 out vec4 frag;
 // linear view depth, for the temporal pass to know where this pixel was on
 // screen last frame. Writing it here is cheaper and more robust than sampling
@@ -196,7 +201,7 @@ void main(){
         + 110.0 * sin(v_wpos.x * 0.0031 + 1.7) * sin(v_wpos.z * 0.0043 - 0.6)
         +  70.0 * sin(v_wpos.x * 0.0212 - 2.3) * sin(v_wpos.z * 0.0168 + 1.1);
     float wfade = 1.0 - smoothstep(60.0, 400.0, wf_dist);
-    if (v_water > 0.5 && length(v_flow) > 0.5) {
+    if (v_water > 0.5 && v_fall < 0.5 && length(v_flow) > 0.5) {
         float f = dot(v_wpos.xz, v_flow) * 0.10 - u_sky.z * 1.3;
         float lake = step(1.5, length(v_flow));
         c += vec3(0.10, 0.13, 0.13) * (0.5 + 0.5 * sin(f)) * (1.0 - lake) * wfade;
@@ -208,7 +213,7 @@ void main(){
     // the sea cannot drift out of tune with the sky above it, and at a grazing
     // angle it becomes a mirror -- which is what makes a sea read as water
     // rather than as blue paint.
-    if (v_water > 0.5) {
+    if (v_water > 0.5 && v_fall < 0.5) {
         vec3 V = normalize(v_wpos - u_cam_pos.xyz);
         float t = u_sky.z;
         vec2 q = v_wpos.xz;
@@ -231,6 +236,13 @@ void main(){
         // peak is well above what the surface can absorb, so its edge was a
         // hard polygon of 255s rather than a glint
         c = c * (1.0 - fres) + refl * fres * 0.90 + u_sun_col.rgb * glint * 0.30;
+    }
+    // A fall is not a mirror: it is white water, and at the grazing angles a
+    // cliff face is seen from, a Fresnel surface reflects the sky and reads as a
+    // flat pale ribbon painted down the rock. Aerated water scatters instead --
+    // bright, and without the sky's colour.
+    if (v_fall > 0.5) {
+        c = v_col * (0.55 + 0.45 * ndl) + u_sky_amb.rgb * 0.12;
     }
     c = clamp(c * 1.15, 0.0, 1.0);
     c = mix(c, c * c * (3.0 - 2.0 * c), 0.55);

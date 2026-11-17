@@ -784,8 +784,51 @@ high 3.646%, low 1.282% against the old ones.
 
 Still open from this family: one dark elongated shard at the monolith's foot is
 not a sliver by the width rule and survives -- it looks like a facet spanning a
-gully, which is the P3 (water/bed and cliff geometry) family. And the waterfall
-and sea-plane items are untouched.
+gully, which is the P3 (water/bed and cliff geometry) family.
+
+### P3 — water is a surface, and a fall is not a mirror — **partly done**
+
+The reported artifact was "something strange with rivers from mountains": a pale
+lavender ribbon painted down a cliff, and a jumble of white plates at the foot of
+a fall. Two separate faults, found by painting the vertex's own flags into the
+fragment (`v_water` magenta, `v_fall` red) and reading the pixels back:
+
+- **The ribbon was a fall shaded as terrain.** Water-ness was inferred from a
+  non-zero flow vector, and a fall whose nearest river segment is degenerate has
+  no flow direction, so `v_water` was 0: it took the *terrain* path -- flat, in
+  the cast shadow, foam-coloured albedo times ambient light. Water now says it is
+  water (`anim.x = -2`, the marker the sea quad already used) and the kind rides
+  in `anim.y`.
+- **A fall is not a mirror.** It went through the Fresnel mix and reflected the
+  sky, which is what made the ribbon pale and flat. Aerated water scatters: falls
+  now keep the facet's own light and drop the reflection.
+
+Measured: 0.688% of the fall camera, and 0.004% of the golden `high` view (the
+canonical views have no such fall), so no goldens were re-recorded. Flicker
+columns unchanged.
+
+Measured and rejected in the same pass:
+
+- **Clipping the seabed at the sea plane.** A facet straddling y = 0 has a chord
+  that stands above the water, and clipping its bed to the underwater polygon is
+  what a lake does -- but a lake also emits a surface over the whole facet, and
+  the sea's surface is the fixed quad *below* the chord. So the fix removes the
+  beach and leaves the shard: measured, the coast went from a smooth shoreline to
+  a ragged row of brown teeth. A facet wholly below the level cannot poke out at
+  all (a plane through three negative heights is negative inside), so this family
+  is smaller than it looked.
+- **A horizon lattice at 2 cells instead of 4.** Tested against the pale line on
+  the cliff in case it was the shadow field: the bake went 944 -> 1236 ms and the
+  line did not change a pixel. Left at 4.
+
+Still owed here: **a fall is one stretched strip along its reach**, not a tilted
+plane per facet. The plates at the foot of a fall are the remaining size of this
+family: each facet hangs at its own corner levels, so neighbours overlap and
+point in different directions. The strip needs the reach traced end to end (the
+segment list in `build_hydrology` already has it) and the bed/plane pair emitted
+once per reach instead of once per facet. Also still open: the sea and the lake
+water take different bounce light, which is visible as a seam where a river mouth
+meets the sea.
 
 
 - Fill the band between the border ring and the interior with an inset ring of

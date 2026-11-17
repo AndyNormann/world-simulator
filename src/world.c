@@ -1991,15 +1991,24 @@ static void ground_colour_at(const float *cr, const float *cg, const float *cb,
     #undef BIL
 }
 
+/* kind: 0 for a solid (bed, rock), 1 for still water, 2 for falling water.
+   A water polygon must *say* it is water, in anim.x, rather than having it
+   inferred from a non-zero flow vector: a fall whose nearest river segment is
+   degenerate has no flow direction at all, and it was then shaded as terrain --
+   a flat pale ribbon lying on the rock. anim.x = -2 is the marker emit_flat_up
+   already uses for the sea, and anim.y (the tree sway phase, unused here) says
+   which kind of water it is. */
 static void emit_fan(int nv, const float xz[5][2], const float *y, const float *nrm,
-                     const float *col, float fx, float fz, const float *bc) {
+                     const float *col, float fx, float fz, const float *bc,
+                     float kind) {
+    const float aw = kind > 0.5f ? -2.0f : 0.0f;
     for (int t = 1; t + 1 < nv; t++) {
         float a[3] = { xz[0][0],  y[0],  xz[0][1]  };
         float b[3] = { xz[t][0],  y[t],  xz[t][1]  };
         float c[3] = { xz[t+1][0], y[t+1], xz[t+1][1] };
-        push_vert(a, nrm, col, 0.0f, 0.0f, fx, fz, bc);
-        push_vert(b, nrm, col, 0.0f, 0.0f, fx, fz, bc);
-        push_vert(c, nrm, col, 0.0f, 0.0f, fx, fz, bc);
+        push_vert(a, nrm, col, aw, kind, fx, fz, bc);
+        push_vert(b, nrm, col, aw, kind, fx, fz, bc);
+        push_vert(c, nrm, col, aw, kind, fx, fz, bc);
     }
 }
 
@@ -2456,7 +2465,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 ix[e][0] = pts_x[id]; ix[e][1] = pts_z[id]; iy[e] = sample_height(pts_x[id], pts_z[id]);
             }
             if (wet == 2) nv = 3;
-            emit_fan(nv, ix, iy, nrm, tri_col[k], 0.0f, 0.0f, bcp);
+            emit_fan(nv, ix, iy, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
             {
                 const float up[3] = { 0.0f, 1.0f, 0.0f };
                 float wx[3][2], wy[3];
@@ -2465,7 +2474,8 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                     wx[e][0] = pts_x[id]; wx[e][1] = pts_z[id]; wy[e] = tri_lvl[k][e];
                 }
                 emit_fan(3, wx, wy, up, wet == 2 ? FOAM_COL : WATER_COL,
-                         tri_flow[k][0], tri_flow[k][1], bcp);
+                         tri_flow[k][0], tri_flow[k][1], bcp,
+                         wet == 2 ? 2.0f : 1.0f);
             }
         } else {
             float bx[3][2], by[3];
@@ -2474,10 +2484,11 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 bx[e][0] = pts_x[id]; bx[e][1] = pts_z[id];
                 by[e] = sample_height(pts_x[id], pts_z[id]);
             }
-            emit_fan(3, bx, by, nrm, tri_col[k], 0.0f, 0.0f, bcp);
+            emit_fan(3, bx, by, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
             if (wet) {
                 const float up[3] = { 0.0f, 1.0f, 0.0f };
-                emit_fan(nv, ix, iy, up, WATER_COL, tri_flow[k][0], tri_flow[k][1], bcp);
+                emit_fan(nv, ix, iy, up, WATER_COL, tri_flow[k][0], tri_flow[k][1], bcp,
+                         wet == 2 ? 2.0f : 1.0f);
             }
         }
     }
@@ -2512,11 +2523,13 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                     nrm[0] = 0.0f; nrm[1] = 1.0f; nrm[2] = 0.0f;
                     fa = tri_flow[k][0]; fb = tri_flow[k][1];
                 }
+                float wk = tri_wet[k] ? (tri_wet[k] == 2 ? 2.0f : 1.0f) : 0.0f;
+                float wa = tri_wet[k] ? -2.0f : 0.0f;
                 float da[3] = { pa[0], pa[1] - SK, pa[2] };
                 float db[3] = { pb[0], pb[1] - SK, pb[2] };
-                push_vert(pa, nrm, wc, 0,0, fa, fb, bcp);
-                push_vert(pb, nrm, wc, 0,0, fa, fb, bcp);
-                push_vert(db, nrm, wc, 0,0, 0,0, bcp);
+                push_vert(pa, nrm, wc, wa,wk, fa, fb, bcp);
+                push_vert(pb, nrm, wc, wa,wk, fa, fb, bcp);
+                push_vert(db, nrm, wc, wa,wk, 0,0, bcp);
                 /* both windings: the wall is visible from either side of it */
                 push_vert(pa, nrm, wc, 0,0, 0,0, bcp);
                 push_vert(db, nrm, wc, 0,0, 0,0, bcp);
