@@ -1065,6 +1065,135 @@ Linux flags, the GLX context, the Mesa driver or `libX11`/`libGL` availability.
 The first Linux run is where those get proven, and `tests/golden/linux/` has to be
 recorded there before the golden step can pass — `tools/check.sh` says so.
 
+## Hardening round 2 — the facet lies about the ground
+
+Round 1 closed the classes it named: colour from the facet (P1), undesigned long
+facets (P2), water as a surface (P3), and it rejected the seam and light phases
+with numbers (P4, P5, P6). What is left is not a new art direction. It is one
+geometric property that every remaining "strange geometry" report has in common,
+plus three places where the gate is blind and has already let two real bugs
+through.
+
+### R0 — the gate learns what it just caught (half session)
+
+Two real bugs were shipped by the GL port and found by *accident*: a texture unit
+that was "unloadable" (a driver warning to stderr) and a uniform block the GLSL
+compiler stripped (a sokol validation warning). Neither could fail anything.
+
+- `gfx_warn`: every sokol log item at warning level increments a counter, and
+  `replays/smoke.txt` asserts it stays at the *listed* set (today: exactly one
+  benign item, the seven-times-per-launch `UNIFORMBLOCK_NAME_NOT_FOUND`). A new
+  warning then fails the cheap gate instead of waiting to be noticed by eye.
+- `VALIDATE_AU_SIZE` and `NO_UNIFORMBLOCK_AT_SLOT` become **fatal**. A stripped
+  uniform is a rendering bug, not a note: the GL compiler removes members no stage
+  reads, so a shader edit that stops using one silently changes the block layout.
+- Numbers that print but are not bounded become replay fields: `points`, `tris`,
+  `build_ms` (and a per-chunk `verts` peak as a percentage of the vertex budget).
+  Today a change that doubles the geometry shows up as a stutter, not as a failure.
+
+### R1 — the facet lies about the ground — the flagship (1–2 sessions)
+
+**Measured today** (seed 1 alpine, four cameras, `|plane(centroid) −
+sample_height(centroid)|` divided by the facet's longest edge, so tiers compare):
+
+| tier | worst facet | facets over 0.5, per streamed world |
+|---|---|---|
+| step 1 | 1.03 – 1.82 | 44 – 272 |
+| step 2 | 1.55 – 2.22 | 347 – 699 |
+| step 4 | 2.20 | 408 – 655 |
+
+A ratio of 2.2 means a facet's own plane is two of its edges away from the ground
+under it: that is not a LOD coarse copy of the terrain, it is a chord across a
+crease — a gully, a cliff edge, a river bank — and it is where the remaining dark
+shard at the monolith's foot comes from, and why the "sand tongue" class had to be
+patched by colour in P1 rather than fixed.
+
+- **A counter, not a screenshot.** `grounderr` = the worst facet in a chunk,
+  normalised by its longest edge, plus a count over the threshold. One line in the
+  colour pass, both numbers already computed there (`cyw` and the centroid
+  `sample_height`), so it costs nothing to run always.
+- **The fix is refinement by error, not by length.** P2's pass splits edges longer
+  than 3x the tier spacing; this one inserts the point of *maximum deviation*
+  inside a facet whose interior is wrong (the centroid, or the midpoint of its
+  worst edge) and retriangulates. That is standard Delaunay refinement by error,
+  it converges, and it is the same machinery P2 already has: a `add_point` +
+  re-triangulate loop, bounded per chunk.
+- **Budget is the constraint.** Async build is ~900 ms against a ~1200 ms budget,
+  so the pass gets a hard cap on inserted points per chunk (worst facets first)
+  and `build_ms` becomes gated in the same session (R0), so it cannot drift.
+- **Target: `grounderr <= 0.35` at every tier.** Expect `seamgap` (135 today) and
+  `wetcoldry` (48) to fall out with it, because both are symptoms of facets
+  spanning features rather than points following them.
+- **Known risk**: where the feature is a *cliff edge*, no interior point fixes a
+  facet that spans it, because both sides are correct and the triangle is a valid
+  chord over a discontinuity. If R1's numbers plateau there, the answer is a min
+  angle / max aspect criterion in the refinement (R1b), not more splitting — and
+  the honest fallback is to make the *shade* of a very steep facet follow its
+  steepest corner, so a cliff face cannot be painted as meadow.
+
+### R2 — prove what motion costs (half session)
+
+`walk` 3.81, `pop` 3.54 and `fly` 16.73 sit above round 1's targets (2.0 / 2.0 /
+8.0), and the explanation in the docs is "terrain detail crossing pixels". That is
+a claim, not a measurement.
+
+- **`stream` column**: during the fly and sprint legs, count chunks that became
+  ready, frames where the drawn chunk count changed, and the largest per-frame
+  vertex delta (the numbers already exist behind the `fly` debug print). Gate
+  `stream == 0` during `fly`. Then the residual `fly` really is motion, and the
+  docs stop asserting it.
+- **Decompose `walk` the way `fly` was decomposed**: same walk with the facet shade
+  off, and again with the horizon shadow off. If `walk` barely moves, the residual
+  is the low-poly ground itself (facet shade is ±18% by design) and the target
+  should be *restated* at today's number rather than chased with another shading
+  pass. If it does move, that term is the next thing to work on and this is where
+  the evidence comes from.
+
+### R3 — pools, budgets, and the quiet failures (half session)
+
+- Print images/views/buffers/passes in use against their pool sizes and assert
+  headroom at the end of `replays/streaming.txt`, which creates and drops 2500
+  chunk buffers. Exhaustion today surfaces as "invalid handle" and then an abort
+  inside `sg_apply_bindings` — the same silent-drop family as the triangle and
+  point counters.
+- Report each chunk's vertex use as a percentage of `MAX_CHUNK_VERTS`
+  (`mesh_overflow == 0` is already asserted, but a chunk at 99% is a landmine that
+  no assert sees).
+
+### R4 — the Linux gate has to be recorded before it is a gate (first hour there, blocking)
+
+- `tools/goldens.sh` on the laptop, then `tools/check.sh --slow`, then recalibrate
+  `tools/flicker.sh` to that machine: the numbers in the file are the Mac's, and
+  `walk`/`yaw` already read 1.5-3x worse on Apple's GL than on Metal, so a laptop
+  running Mesa may need its own gate rather than the Mac's.
+- Record the GL-vs-Metal delta as a *report* number in the docs (today: 3.4% mean
+  at ssaa 2, 1.7% at ssaa 4, edges only) so "the same renderer" means something
+  across platforms and a genuine backend bug is distinguishable from rasterization.
+
+### Acceptance table
+
+| | today | round 2 target |
+|---|---|---|
+| `grounderr` (step 1 / 2 / 4) | 1.8 / 2.2 / 2.2 | <= 0.35 each |
+| facets over 0.5 per world | 44-699 | <= 20 |
+| `gfx_warn` new items | unbounded | 0 (listed set only) |
+| `seamgap` | 135 | < 50 |
+| `wetcoldry` | 48 | < 20 |
+| `build_ms` (async, gated) | ~900 | <= 1200 |
+| `stream` during `fly` | unmeasured | 0 |
+| `walk` / `pop` | 3.81 / 3.54 | restated with evidence, not chased |
+
+### Deliberately not planned, round 2
+
+- MSAA, alpha foliage, geomorphing, motion vectors, a render graph: unchanged
+  decisions from round 1, and none of them address a property measured above.
+- A motion-compensated flicker metric: `stream` answers the same question for a
+  tenth of the machinery.
+- Splitting water off the terrain mesh: measured in P3 as the wrong lever.
+- Chasing `fly` below its current number: the decomposition in R2 either shows it
+  is motion (target restated) or shows what the real term is (new work, with
+  evidence).
+
 ### Deliberately not planned
 
 - MSAA: the temporal pass has to sample depth, so a multisampled target cannot be
