@@ -9,6 +9,12 @@ void game_logger(const char *tag, uint32_t level, uint32_t item,
        stage never reads, so sokol cannot find them when it walks the list.
        Benign by construction, and it fires seven times per launch. */
     if (item == SG_LOGITEM_GL_UNIFORMBLOCK_NAME_NOT_FOUND_IN_SHADER) return;
+    /* Everything that is not a PANIC is counted, because a warning nobody gates
+       is a bug found by eye: the two real defects of the GL port (a texture unit
+       the driver refused, a uniform block the GLSL compiler stripped) were both
+       just log lines. `assert warned == 0` in the smoke replay is what turns
+       that history into a gate. */
+    if (level) gfx_warn++;
     fprintf(stderr, "%s%s%s(%u): %s\n", tag, level ? " warning: " : " PANIC: ",
             file ? file : "sokol", line, msg ? msg : "(no message)");
     /* sokol would abort() here by default. Swallowing that turns a broken
@@ -1354,12 +1360,27 @@ void flicker_probe(void) {
     memcpy(base, cap_buf, bytes);
     float fly = 0.0f, fly_sum = 0.0f;
     int fn = 0;
+    /* Two counters that answer what `fly` only implies: how many chunks arrived
+       while the camera was moving (`fly_arrive`), and how many frames changed
+       the number of chunks drawn (`fly_draw`). A pan does not move the camera
+       across the ground, so a chunk arriving during it is the streamer working
+       when it should not be; the drawn count changing is the frustum, which is
+       ordinary motion. Without these, "fly is high because terrain detail
+       crosses pixels" was an assertion. */
+    int fly_arrive = 0, fly_draw = 0, last_ready = nchunks_ready(), last_drawn = chunks_drawn;
     for (int leg = 0; leg < 3; leg++) {
         for (int i = 0; i < 26; i++) {
             if (leg == 0) yaw = yaw0 + 0.005f * (float)i;          /* 8 degree pan */
             else if (leg == 1) pitch = pitch0 + 0.003f * (float)i; /* look up 5 deg */
             else cam_y = cy0 + 1.0f * (float)i;                   /* 29 units up */
             grab();
+            {
+                int rd = nchunks_ready();
+                if (rd > last_ready) fly_arrive += rd - last_ready;
+                last_ready = rd;
+                if (chunks_drawn != last_drawn) fly_draw++;
+                last_drawn = chunks_drawn;
+            }
             float d = flicker_pct(base, cap_buf, 0);
             /* the first frames of a leg start from the previous leg's history,
                so they ramp up: that is the filter catching up, not the world */
@@ -1417,9 +1438,9 @@ void flicker_probe(void) {
     memcpy(base, cap_buf, bytes);
     float f50, f99, fmax;
     frame_time_stats(&f50, &f99, &fmax);
-    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f sprint=%.2f%% smax=%.2f%% pop=%.2f%% pmax=%.2f%% fly=%.2f%% static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
+    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f sprint=%.2f%% smax=%.2f%% pop=%.2f%% pmax=%.2f%% fly=%.2f%% flyarrive=%d flydraw=%d static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
            terrain_seed, gfx_w, gfx_h, gfx_ssaa, f50, f99, fmax, sprint, sprint_max,
-           pop, pop_max, fly, res[0], res[1], res[2], res[3], walk, walk_max,
+           pop, pop_max, fly, fly_arrive, fly_draw, res[0], res[1], res[2], res[3], walk, walk_max,
            walk_up, walk_player, rebuild_max,
            cull, flicker_pct(base, alt, 1), lod_lvl, lod_max);
     fflush(stdout);
@@ -1494,12 +1515,19 @@ static void capture_current(const char *path) {
     printf("height=%.1f..%.1f  shadowed=%d%%  trees=%d  build=%.0f+%.0fms  peak=%.0f,%.0f,%.0f\n",
            lo, hi, shadowed_pct(), tree_count, build_ms, build_async_ms,
            peak_x, peak_y, peak_z);
-    printf("chunks: %d of %d ready, %d drawn\n", nchunks_ready(), NCHUNKS, chunks_drawn);
+    /* One buffer per chunk against a fixed pool: exhausting it is a sokol
+       *warning* that hands back an invalid handle, then an abort inside
+       sg_apply_bindings. Warnings are counted now, so that path fails the cheap
+       gate; the margin is printed so it is visible before it gets there. */
+    printf("chunks: %d of %d ready, %d drawn, buffers %d/%d\n",
+           nchunks_ready(), NCHUNKS, chunks_drawn, NCHUNKS, 4096);
     printf("mesh: %d points, %d triangles, %d facets\n", mesh_pts, mesh_tris, mesh_facets);
     /* the worst chunk, not a total: these describe the fill, and a total would
        describe the camera instead */
-    printf("structure: edgelong=%d tritiny=%d unusedpts=%d wetcoldry=%d seamgap=%d\n",
-           c_edge_long, c_tri_tiny, c_unused_pts, c_wet_col_dry, c_seam_gap);
+    printf("structure: edgelong=%d tritiny=%d unusedpts=%d wetcoldry=%d seamgap=%d "
+           "grounderr=%.2f groundfar=%.2f chunkverts=%d%% warn=%d\n",
+           c_edge_long, c_tri_tiny, c_unused_pts, c_wet_col_dry, c_seam_gap,
+           c_ground_err, c_ground_err_far, c_chunk_verts, gfx_warn);
     if (seg_n > 0)
         printf("rivers=%d  segments=%d  level %.1f..%.1f\n", river_count, seg_n, river_hi, river_lo);
     else

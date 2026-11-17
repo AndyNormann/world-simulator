@@ -328,6 +328,11 @@ GV(int c_tri_tiny,0)      /* facets under 4 units^2 */
 GV(int c_unused_pts,0)    /* points in the set that no live facet uses */
 GV(int c_wet_col_dry,0)   /* seabed-coloured facet that has a dry corner */
 GV(int c_seam_gap,0)      /* border-chain edges off the ground by >1 unit */
+GV(float c_ground_err,0)  /* worst near facet: how far its own plane is from the ground under it,
+                             in units of the tier's spacing (1.0 = a third of a spacing) */
+GV(float c_ground_err_far,0) /* the same over every tier: dominated by cliffs, reported only */
+GV(int c_chunk_verts,0)   /* peak chunk vertex use, % of MAX_CHUNK_VERTS */
+GV(int gfx_warn,0)        /* sokol warnings this process: anything here is a bug */
 GV(int world_nonfinite,0)
 GV(int mesh_tris,0)
 GV(int mesh_facets,0)
@@ -338,6 +343,7 @@ G(float tri_flow[MAX_DT][2])
 G(int tri_wet[MAX_DT])
 G(float tri_lvl[MAX_DT][3])
 G(float nx_[MAX_DT], ny_[MAX_DT], nz_[MAX_DT])
+G(float tri_gerr[MAX_DT])   /* facet's plane vs the ground under it, in tier spacings/3 */
 G(pthread_t builder)
 GV(pthread_mutex_t job_mu,PTHREAD_MUTEX_INITIALIZER)
 GV(pthread_cond_t job_cv,PTHREAD_COND_INITIALIZER)

@@ -66,6 +66,17 @@ float key_state(const char *field) {
     if (!strcmp(field, "unusedpts")) return (float)c_unused_pts;
     if (!strcmp(field, "wetcoldry")) return (float)c_wet_col_dry;
     if (!strcmp(field, "seamgap")) return (float)c_seam_gap;
+    /* how badly a facet lies about the ground under it, and how close a chunk
+       came to the vertex budget: both print today and neither was gated */
+    if (!strcmp(field, "grounderr")) return c_ground_err;
+    if (!strcmp(field, "groundfar")) return c_ground_err_far;
+    if (!strcmp(field, "chunkverts")) return (float)c_chunk_verts;
+    /* sokol warnings. The listed benign one is filtered in game_logger; this
+       must be zero, so a validation warning fails the cheap gate. */
+    if (!strcmp(field, "warned")) return (float)gfx_warn;
+    if (!strcmp(field, "points")) return (float)mesh_pts;
+    /* async build, the number that says whether a world got more expensive */
+    if (!strcmp(field, "buildms")) return build_async_ms;
     /* the whole heightfield, so a seed sweep can catch a world that generated
        flat, empty or nonsensical without rendering anything */
     if (!strcmp(field, "height_min") || !strcmp(field, "height_max")) {

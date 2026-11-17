@@ -1170,18 +1170,78 @@ a claim, not a measurement.
   at ssaa 2, 1.7% at ssaa 4, edges only) so "the same renderer" means something
   across platforms and a genuine backend bug is distinguishable from rasterization.
 
-### Acceptance table
+### What round 2 actually found
 
-| | today | round 2 target |
+The plan's headline claim was wrong, and measuring it is what this round bought.
+
+**1. Refinement by error does not work here, and the target was mis-set.** The
+first implementation inserted a point at the centroid of every facet whose
+interior deviated from the ground by more than a third of a tier spacing. It
+added 18-30% more points and 30-60% more build time for `grounderr` 24 -> 21
+(worst facet), no visible change on any artifact camera, and it made `wetcoldry`
+*worse* (48 -> 547 on the lake camera) because a facet split at a channel edge
+gets corners on both sides of the waterline. Reverted.
+
+**2. The worst facets are not where the plan assumed.** Splitting `grounderr`
+into the near tier (the surface a player stands on) and every tier (dominated by
+the coarse copy of a cliff) gave 5.5-9.3 near versus 13.1 overall. Looking at the
+worst facets one by one: at tier 4 they are legitimate cliff chords (corners
+spanning 180-340 units of height, which no point *on the plane* can fix), and at
+tier 1 they are narrow pits 30-40 units deep inside a 34-unit facet. `grounderr`
+therefore measures the heightfield's own roughness as much as the mesh's
+honesty. It is kept as a **regression alarm** (`grounderr <= 12`,
+`groundfar > 16` fails), not as an acceptance target, and the plan's 0.35 is
+recorded as wrong rather than silently dropped.
+
+**3. The one real defect it did find: the triangulation ignored its own points.**
+`unusedpts` (5 per chunk) was not merely untidy. Bowyer-Watson rejects a
+near-collinear triple (`d < 1e-6` in `dt_add`), and a point whose whole cavity
+turns out to be such triples is inserted into nothing: it stays in the point set,
+no facet uses it, and the fill spans the hole it was placed to describe. That is
+how a facet 220 units long came to have another point 6 units from its own
+midpoint. A weld pass after the refinement now splits whichever facet contains
+such a point; `unusedpts` reads 2-3 (the remainder are points that end up
+outside the border ring's hull, where no facet can contain them). This is also
+why error-driven refinement could not converge: it kept adding points the fill
+then ignored.
+
+**4. Two edges the plan wanted were measured and declined.** Splitting an edge
+when only *one* endpoint is a border point is legal (a T-junction needs two) and
+did reduce `seamgap` 135 -> 121, but cost +20% points and +150 ms of build for
+nothing visible; the conservative rule stays. Adding a point on the river
+channel's centre line, on the theory that a 35-deep pit *is* a channel, changed
+no counter at all: the worst near facets are not channels.
+
+### What landed instead, and what it cost
+
+| | before | after |
 |---|---|---|
-| `grounderr` (step 1 / 2 / 4) | 1.8 / 2.2 / 2.2 | <= 0.35 each |
-| facets over 0.5 per world | 44-699 | <= 20 |
-| `gfx_warn` new items | unbounded | 0 (listed set only) |
-| `seamgap` | 135 | < 50 |
-| `wetcoldry` | 48 | < 20 |
-| `build_ms` (async, gated) | ~900 | <= 1200 |
-| `stream` during `fly` | unmeasured | 0 |
-| `walk` / `pop` | 3.81 / 3.54 | restated with evidence, not chased |
+| `warned` (sokol warnings) | uncounted | 0, asserted in smoke + artifacts |
+| `points` / `buildms` / `chunkverts` | printed only | replay fields, asserted |
+| `unusedpts` | 5 | 2-3 |
+| `chunkverts` (peak chunk) | unmeasured | **94-99%** of the vertex cap |
+| `flyarrive` during the fly legs | unmeasured | **0** on every seed and view |
+| `grounderr` near / far | unmeasured | 5.5-9.3 / 13.1 (gated) |
+| build (async) | ~883 ms | ~900-1000 ms |
+
+`chunkverts` 94-99% is the finding with the most teeth: one chunk in a streamed
+world is within a percent or two of `MAX_CHUNK_VERTS`, and exceeding it does not
+fail, it truncates that chunk's geometry (`mesh_overflow`). It is a gate now, and
+raising the cap or lowering the per-chunk geometry is a known open item rather
+than a surprise.
+
+### Acceptance table (as measured)
+
+| | before | round 2 result |
+|---|---|---|
+| `grounderr` near | unmeasured | 5.5-9.3, gated at 12 |
+| `grounderr` far | unmeasured | 13.1, gated at 16 |
+| `unusedpts` | 5 | 2-3 |
+| `warned` | unbounded | 0 (gated) |
+| `chunkverts` | unmeasured | < 100 (gated), 99 observed |
+| `flyarrive` | unmeasured | 0 (gated) |
+| `walk` / `pop` | 3.81 / 3.54 | unchanged: proven motion, alarm kept |
+| `seamgap` | 135 | 135 |
 
 ### Deliberately not planned, round 2
 

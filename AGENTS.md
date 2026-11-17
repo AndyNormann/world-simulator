@@ -250,8 +250,27 @@ assert FIELD OP VALUE        OP: > < >= <= == !=
 Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees rivers shadowed_pct
 tris chunks_drawn height_min height_max`, plus the structural counters
 `overflow nonfinite trioverflow ptoverflow edgelong tritiny unusedpts
-wetcoldry seamgap`. `tris` and `chunks_drawn` need rendering, so they are skipped in
-`dump` mode. `#` starts a comment.
+wetcoldry seamgap grounderr groundfar chunkverts warned points buildms`.
+`tris` and `chunks_drawn` need rendering, so they are skipped in `dump` mode.
+`#` starts a comment.
+
+- **`warned` is the highest-value assert in the set.** Every sokol log item at
+  warning level is counted (the one benign GL item, a uniform block no stage
+  reads, is filtered in `game_logger`). It is 0 and asserted in `smoke.txt` and
+  `artifacts.txt`, because the two real defects of the GL port — a texture unit
+  the driver refused and a uniform block the GLSL compiler stripped — were both
+  *just log lines*. `POOL_EXHAUSTED` is a warning too, so it fails there rather
+  than aborting later inside a draw.
+- **`chunkverts` is a real landmine, not a curiosity.** It reports the peak
+  chunk as a percentage of `MAX_CHUNK_VERTS`, and a streamed alpine world already
+  reaches 94-99%. Crossing it does not fail: the chunk's geometry is truncated.
+- **`grounderr` measures the mesh against the ground it claims**, as a fraction
+  of a third of the tier's spacing; `grounderr` is the near tier (a bug), and
+  `groundfar` (13.1) is dominated by coarse-tier cliffs, where three points
+  always span the step and no inserted point can help. Both are alarms at
+  today's numbers. `flyarrive` (in `--flicker`) counts chunks that arrived while
+  the flying camera moved and must be 0: that is what makes `fly`'s number a
+  measurement of motion rather than a claim about the streamer.
 
 A failing assert prints `file:line: field is X, expected OP Y (t=Zs)` and exits 1.
 

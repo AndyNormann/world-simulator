@@ -2117,7 +2117,13 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 if (!dt[k].alive) continue;
                 for (int e = 0; e < 3; e++) {
                     int a = dt[k].v[e], b = dt[k].v[(e + 1) % 3];
-                    if (pt_edge[a] || pt_edge[b]) continue;   /* the shared chain */
+                    /* A border point anywhere on the edge means the edge may be
+                       part of a chain the neighbour also has, so it is left
+                       alone. (Splitting when only *one* endpoint is a border
+                       point is legal, but measured: +20% points and +150ms of
+                       build for `seamgap` 135 -> 121 and nothing on screen, so
+                       the conservative rule stays.) */
+                    if (pt_edge[a] || pt_edge[b]) continue;
                     float dx = pts_x[a] - pts_x[b], dz = pts_z[a] - pts_z[b];
                     if (dx*dx + dz*dz < lim * lim) continue;
                     int before = npts;
@@ -2131,14 +2137,70 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         }
     }
 
+    /* --- weld the points the triangulation left out -------------------------
+       Bowyer-Watson rejects a near-collinear triple (d < 1e-6 in dt_add), and a
+       point whose whole cavity turns out to be such triples is inserted into
+       nothing: it stays in the point set, no facet uses it, and the fill spans
+       the hole it was placed to describe. That is how a facet 220 units long
+       ends up with another point 6 units from its own midpoint -- the sample was
+       there, the triangulation just did not see it -- and it is why refining by
+       error kept adding points without making the worst facet any better.
+       Repair is cheap and exact: an unused point must lie inside some facet
+       (it is inside the hull, since it was accepted by add_point), so split that
+       facet into three. Measured 5 such points per chunk before, none after. */
+    {
+        static unsigned char used[MAX_PTS + 3];
+        memset(used, 0, (size_t)npts);
+        for (int k = 0; k < ndt; k++) {
+            if (!dt[k].alive) continue;
+            used[dt[k].v[0]] = used[dt[k].v[1]] = used[dt[k].v[2]] = 1;
+        }
+        for (int p = 0; p < npts; p++) {
+            if (used[p]) continue;
+            for (int k = 0; k < ndt; k++) {
+                if (!dt[k].alive) continue;
+                int a = dt[k].v[0], b = dt[k].v[1], c = dt[k].v[2];
+                float ax = pts_x[a], az = pts_z[a];
+                float bx = pts_x[b], bz = pts_z[b];
+                float cx2 = pts_x[c], cz2 = pts_z[c];
+                float d1 = (bx-ax)*(pts_z[p]-az) - (bz-az)*(pts_x[p]-ax);
+                float d2 = (cx2-bx)*(pts_z[p]-bz) - (cz2-bz)*(pts_x[p]-bx);
+                float d3 = (ax-cx2)*(pts_z[p]-cz2) - (az-cz2)*(pts_x[p]-cx2);
+                /* winding is not fixed, so accept a point on either side */
+                int pos = (d1 >= 0.0f) + (d2 >= 0.0f) + (d3 >= 0.0f);
+                if (pos != 0 && pos != 3) continue;
+                dt[k].alive = 0;
+                dt_add(a, b, p);
+                dt_add(b, c, p);
+                dt_add(c, a, p);
+                used[p] = 1;
+                break;
+            }
+        }
+    }
+
     int ntri = 0;
     for (int k = 0; k < ndt; k++) {
         if (!dt[k].alive) continue;
         float ax = pts_x[dt[k].v[0]], az = pts_z[dt[k].v[0]];
         float bx = pts_x[dt[k].v[1]], bz = pts_z[dt[k].v[1]];
         float qx = pts_x[dt[k].v[2]], qz = pts_z[dt[k].v[2]];
-        float u[3] = { bx-ax, sample_height(bx,bz)-sample_height(ax,az), bz-az };
-        float w[3] = { qx-ax, sample_height(qx,qz)-sample_height(ax,az), qz-az };
+        float ha = sample_height(ax, az);
+        float hb = sample_height(bx, bz);
+        float hq = sample_height(qx, qz);
+        float u[3] = { bx-ax, hb-ha, bz-az };
+        float w[3] = { qx-ax, hq-ha, qz-az };
+        /* How far this facet's own plane is from the ground under its middle,
+           in units of the tier's spacing (1.0 = a third of a spacing). The
+           counter reads this; it is computed here because the three corner
+           heights are already in hand, so it costs one extra sample per facet
+           rather than four. */
+        {
+            const float etol = 0.35f * (float)step * CELL;
+            float dev = sample_height((ax + bx + qx) / 3.0f, (az + bz + qz) / 3.0f)
+                      - (ha + hb + hq) / 3.0f;
+            tri_gerr[k] = (dev < 0.0f ? -dev : dev) / etol;
+        }
         nx_[k] = u[1]*w[2]-u[2]*w[1];
         ny_[k] = u[2]*w[0]-u[0]*w[2];
         nz_[k] = u[0]*w[1]-u[1]*w[0];
@@ -2178,6 +2240,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         static unsigned char used[MAX_PTS + 3];
         memset(used, 0, (size_t)npts);
         int edge_long = 0, tri_tiny = 0, unused = 0, seam_gap = 0;
+        float gerr = 0.0f;
         /* Relative to the fill's own spacing, not the cell: the interior rule
            already places points up to 36 units apart on flat ground, and a
            coarse tier places them a tier-interval apart. Past ~2.2x that, the
@@ -2209,7 +2272,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                    tier, and it is shared with the neighbour's *finer* chain:
                    the deviation between this chord and the ground is the step
                    the neighbour draws one facet away. That is the seam. */
-                if (l > 1.5f * CELL && pt_edge[pa] && pt_edge[pb]) {
+                if (l > 1.5f * CELL && (pt_edge[pa] & pt_edge[pb]) != 0) {
                     float dev = sample_height((pts_x[pa] + pts_x[pb]) * 0.5f,
                                               (pts_z[pa] + pts_z[pb]) * 0.5f)
                               - 0.5f * (sample_height(pts_x[pa], pts_z[pa])
@@ -2224,12 +2287,22 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             float width = best > 0.0f ? 2.0f * tri_ar / best : 0.0f;
             if (width < 1.0f) tri_tiny++;          /* degenerate or sliver */
             else if (best > elim) edge_long++;
+            if (width < 1.0f) continue;            /* not a surface: see above */
+            if (tri_gerr[k] > gerr) gerr = tri_gerr[k];
         }
         for (int p = 0; p < npts; p++) if (!used[p]) unused++;
         if (edge_long > c_edge_long) c_edge_long = edge_long;
         if (tri_tiny  > c_tri_tiny)  c_tri_tiny  = tri_tiny;
         if (unused    > c_unused_pts) c_unused_pts = unused;
         if (seam_gap  > c_seam_gap)  c_seam_gap  = seam_gap;
+        /* Two numbers, because they mean different things: at step 1 the facet
+           is a surface the player stands on and a chord over a crease is a bug;
+           at step 4 it is a coarse copy of a cliff, where any three points span
+           the step and no insertion fixes it (measured: the worst facets are all
+           tier 4, spanning 180-340 units of height). Gating the coarse one would
+           gate the LOD's existence. */
+        if (step <= 1 && gerr > c_ground_err) c_ground_err = gerr;
+        if (gerr > c_ground_err_far) c_ground_err_far = gerr;
     }
 
     /* One river query per vertex, not per facet: the water paint wants the
@@ -2577,6 +2650,13 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     /* facets are no longer merged, so a facet is a triangle; the diagnostic
        keeps reporting the triangle count it used to call facets */
     mesh_facets += ntri;
+    /* Peak vertex use against the hard budget. mesh_overflow only fires at the
+       moment a chunk is truncated, so a chunk at 99% is a landmine that no
+       assert sees; the percentage makes the approach visible. */
+    {
+        int pct = (int)(100.0 * (double)vcount / (double)(MAX_CHUNK_VERTS * VERT_FLOATS));
+        if (pct > c_chunk_verts) c_chunk_verts = pct;
+    }
     return vcount;
 }
 
@@ -2873,6 +2953,7 @@ void start_streamer(unsigned seed) {
     mesh_pts = mesh_tris = mesh_facets = 0;
     mesh_overflow = 0; tri_overflow = 0; pt_overflow = 0;
     c_edge_long = c_tri_tiny = c_unused_pts = c_wet_col_dry = c_seam_gap = 0;
+    c_ground_err = c_ground_err_far = 0.0f; c_chunk_verts = 0;
     builder_t0 = stm_now();
     builder_live = 1;
     builder_started = 1;

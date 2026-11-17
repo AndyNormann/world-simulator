@@ -58,3 +58,12 @@ assert tritiny <= 120
 assert unusedpts <= 10
 assert wetcoldry <= 80
 assert seamgap <= 200
+# How far a facet's own plane is from the ground under it, in thirds of a tier
+# spacing (1.0 = a third). At step 1 it is a bug -- the shard; at tier 4 it is a
+# cliff, which no insertion into the plane can fix, so it has its own alarm.
+assert grounderr <= 12
+assert groundfar <= 16
+# pool exhaustion and stripped uniforms are warnings: they must never appear
+assert warned == 0
+assert chunkverts < 100
+assert unusedpts <= 6

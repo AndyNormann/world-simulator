@@ -20,6 +20,14 @@ assert trioverflow == 0       # no chunk lost triangles to the Delaunay array
 assert ptoverflow == 0        # no chunk hit the point budget
 shot build/shots/smoke-default.png
 assert tris > 1000
+# Nothing a driver or sokol says at warning level may pass unnoticed: the two
+# real defects of the GL port were both just log lines, and pool exhaustion is a
+# *warning* (it hands back an invalid handle and aborts later inside a draw).
+assert warned == 0
+# The vertex budget is a hard cap that silently truncates a chunk's geometry.
+assert chunkverts < 100
+# Every world builds inside its budget; the number is an alarm, not a target.
+assert buildms < 2000
 assert chunks_drawn > 20
 assert shadowed_pct < 100
 assert overflow == 0          # the streamer built 200+ chunks and dropped nothing

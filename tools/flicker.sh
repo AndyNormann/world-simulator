@@ -73,6 +73,14 @@
 # meadow (walk 3.8%) to a shoreline (6.9%) when trees stopped standing in water,
 # with no rendering change at all. So the walk gate is a gross-regression alarm
 # at 8%: the failures it exists for were 6-12% before temporal AA.
+#
+# `flyarrive` is gated at exactly 0 and is the reason `fly` can be an alarm
+# instead of a mystery: it counts chunks that became ready while the flying
+# camera was moving, which a pan and a climb must never need. Measured 0 on
+# every seed and view with the hysteresis in place, while `flydraw` (frames
+# whose drawn-chunk count changed, i.e. the frustum) reads 30-32. So `fly`'s
+# 16-27% is terrain detail crossing pixels plus the temporal filter, not
+# streaming, and that is now a measurement rather than a claim.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./build.sh >/dev/null
@@ -96,11 +104,12 @@ for s in "$@"; do
         smax=$(echo "$line"    | sed -n 's/.* smax=\([0-9.]*\)%.*/\1/p')
         p99=$(echo "$line"     | sed -n 's/.* p99=\([0-9.]*\).*/\1/p')
         fmax=$(echo "$line"    | sed -n 's/.* max=\([0-9.]*\).*/\1/p')
+        arrive=$(echo "$line"  | sed -n 's/.* flyarrive=\([0-9]*\).*/\1/p')
         awk -v a="$static" -v b="$walk" -v c="$rebuild" -v d="$cull" \
             -v e="$lod" -v f="$lodmax" -v g="$p99" -v h="$fmax" -v i="$smax" \
-            -v j="$pop" -v k="$pmax" -v l="$fly" \
-            'BEGIN{ if (a > 0.5 || b > 6.0 || c > 1.0 || d > 0.0 || e > 12.0 || f > 300 || g > 25.0 || h > 60.0 || i > 55.0 || j > 6.0 || k > 7.0 || l > 45.0) exit 1 }' || {
-            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax sprint=$sprint% smax=$smax% pop=$pop% pmax=$pmax% fly=$fly% p99=${p99}ms max=${fmax}ms)"
+            -v j="$pop" -v k="$pmax" -v l="$fly" -v m="$arrive" \
+            'BEGIN{ if (a > 0.5 || b > 6.0 || c > 1.0 || d > 0.0 || e > 12.0 || f > 300 || g > 25.0 || h > 60.0 || i > 55.0 || j > 6.0 || k > 7.0 || l > 45.0 || m > 0) exit 1 }' || {
+            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax sprint=$sprint% smax=$smax% pop=$pop% pmax=$pmax% fly=$fly% flyarrive=$arrive p99=${p99}ms max=${fmax}ms)"
             fail=1
         }
     done
