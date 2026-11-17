@@ -723,7 +723,70 @@ rule in place it measures the *population the rule protects* (a centre sample in
 the sea on a facet with dry ground), not a fault. What the crop still shows is a
 100-unit sand wedge rather than a 100-unit navy wedge -- geometry, which is P2.
 
-### P2 — no facet nobody designed (1-2 sessions)
+### P2 — no facet nobody designed — **done**
+
+Diagnosis first, because the plan's guess was wrong in an interesting way. The
+long facets were **not** the empty band beside the ring: they are a degeneracy of
+the ring itself. The ring is a run of points on the cell lattice, so the fill's
+circumcircle test has nothing to separate them, and Bowyer-Watson leaves some of
+them out and spans 2-6 intervals with one triangle -- 100 to 350 units, aspect
+ratios of 100:1. That single fault produced every variety of "facet nobody
+designed": the sand wedges over water, the navy shards, the dark hairlines across
+a meadow, and the seam chords standing off the ground.
+
+What landed:
+
+- **The ring is not a straight line.** Each border point is offset perpendicular
+  by up to +-0.45 units, hashed from its own *world* cell indices (and applied
+  along a fixed world axis, never "inward"), so the chunk on the other side
+  computes the identical point and the chain is still shared. The size is not
+  taste: `add_point` lets a point sit half a unit outside the rect, so a larger
+  offset makes one side drop the point and crack the seam -- measured at +-3 and
+  +-6.5 units, which decorrelated the fill better *and* left each border with a
+  point that only one of the two chunks had.
+- **A sliver gets a flat normal.** Under a unit of width the facet is sub-pixel
+  and its normal comes from three nearly collinear points, so the direction is
+  noise and the noise shaded it dark: that is the thin dark line lying across a
+  meadow. It is now drawn with an up normal. Skipping it instead was tried and
+  rejected -- it leaves pinholes, which read as cyan hairlines showing the sea
+  through the grass.
+- **The counters classify by width, not area.** A 200-by-1 sliver has 100 units
+  of area and is still not a surface; `tritiny` is now "width under a unit",
+  `edgelong` "longest edge past 4.5x the fill's own spacing *and* at least a unit
+  wide", so each facet lands in at most one of them.
+- The **world rim is excluded** from the counters (a chunk at the boundary has
+  its ring clipped by the heightfield, so its fill is degenerate by construction,
+  and it is the one place a player cannot stand). Those facets are real and are
+  their own item.
+- **TSan found three genuine races** while streaming: `cy_top`, `cy_bot` and
+  `words` are written by the builder and read by the cull, which is drawing the
+  previous build of the same chunk at the time. They are relaxed atomics now, and
+  `sg_draw` uses the count that was loaded rather than re-reading it.
+
+Measured at seed 1, worst chunk, before -> after:
+
+| counter | before | after |
+|---|---|---|
+| `edgelong` | 266 | 2 |
+| `tritiny` | 441 (area rule) | 88 (width rule) |
+| `unusedpts` | 18 | 4 |
+| `wetcoldry` | 105 | 41 |
+| `seamgap` | 453 | 127 |
+
+Flicker at seed 1's ground camera, same build: `yaw` 4.88 -> 0.77, `pitch` 5.71 ->
+0.96, `walk` 6.64 -> 2.66, `wmax` 10.06 -> 3.83, `pop` 5.72 -> 2.42, `fly`
+19.82 -> 16.10, `rebuild`/`cull` still 0.00. Points 230880 -> 196993 (-15%), the
+triangle count is unchanged, and the chunk build time is unchanged: the fault was
+costing vertices, not correctness of count.
+
+Goldens re-recorded (the triangulation of the whole world changed): dusk 0.571%,
+high 3.646%, low 1.282% against the old ones.
+
+Still open from this family: one dark elongated shard at the monolith's foot is
+not a sliver by the width rule and survives -- it looks like a facet spanning a
+gully, which is the P3 (water/bed and cliff geometry) family. And the waterfall
+and sea-plane items are untouched.
+
 
 - Fill the band between the border ring and the interior with an inset ring of
   points (tried once: it changes the fill, and it removes the structural

@@ -53,8 +53,8 @@ time 12.0
 shot build/shots/art-6-river.png
 
 # structural health after 6 views (which stream in every tier at least once)
-assert edgelong <= 300
-assert tritiny <= 500
-assert unusedpts <= 30
-assert wetcoldry <= 150
-assert seamgap <= 500
+assert edgelong <= 20
+assert tritiny <= 120
+assert unusedpts <= 10
+assert wetcoldry <= 80
+assert seamgap <= 200

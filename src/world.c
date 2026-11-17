@@ -1884,6 +1884,36 @@ void delaunay(void) {
    and Delaunay fans it back to the nearest border run -- a handful of slivers
    200 units long, which is exactly what that looked like on screen. */
 
+void add_point(float x, float z, float min_d);
+
+/* A point on a chunk's border ring. It is marked explicitly, because the mark
+   used to be inferred from being within 0.05 units of the rect edge and the ring
+   is deliberately not straight (see ring_off). */
+void add_edge_point(float x, float z, unsigned bits) {
+    int before = npts;
+    add_point(x, z, 0.01f);
+    if (npts > before) pt_edge[before] |= (unsigned char)bits;
+}
+
+/* How far a border point sits off the straight line, +-1.5 units.
+   The ring used to be a run of exactly collinear points on the cell lattice,
+   and a collinear run is degenerate for the circumcircle test: the fill left
+   some of them out and bridged the gap with a facet 100-150 units long -- the
+   sand wedges and the dark shards, and (because its colour and its water class
+   are each decided once) a facet that is bluff on one corner and seabed on
+   another. Offsetting each point breaks the degeneracy without moving the chain
+   off the border in any way the neighbour can disagree about: the offset is a
+   hash of the point's own *world* cell indices and is always applied along the
+   same world axis, so the chunk on the other side computes the same point. */
+float ring_off(int ci, int cj) {
+    unsigned h = terrain_hash(ci, cj, terrain_seed ^ 0x7a3d91u);
+    /* Just under the half unit a point may sit outside the chunk rect (see
+       add_point's clip): the two chunks that share a border must both keep the
+       point, or one of them draws a chord the other does not. A larger offset
+       would decorrelate the fill better and crack every seam. */
+    return ((float)(h & 255u) / 255.0f - 0.5f) * 0.9f;
+}
+
 void add_point(float x, float z, float min_d) {
     if (npts >= MAX_PTS) { pt_overflow++; return; }
     if (x < clip_x0 - 0.5f || x > clip_x1 + 0.5f) return;
@@ -1992,16 +2022,25 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     /* Border ring first, unjittered and at full resolution: the neighbour
        generates exactly these points along the same line, so the two chunk
        surfaces share a vertex chain and cannot crack or overlap. */
+    /* The four corners are exactly on the lattice and never offset, and every
+       side skips them: a corner reached from two sides would otherwise be added
+       twice, a unit or two apart, and leave a sliver at every corner. */
     for (int k = c0; k <= c1; k += step) {
         float f = k * CELL - TERRAIN_WORLD * 0.5f;
-        add_point(f, oz, 0.01f);
-        add_point(f, ez, 0.01f);
+        if (k == c0 || k == c1) continue;
+        add_edge_point(f, oz + ring_off(k, r0), 4u);
+        add_edge_point(f, ez + ring_off(k, r1), 8u);
     }
     for (int k = r0; k <= r1; k += step) {
         float f = k * CELL - TERRAIN_WORLD * 0.5f;
-        add_point(ox, f, 0.01f);
-        add_point(ex, f, 0.01f);
+        if (k == r0 || k == r1) continue;
+        add_edge_point(ox + ring_off(c0, k), f, 1u);
+        add_edge_point(ex + ring_off(c1, k), f, 2u);
     }
+    add_edge_point(ox, oz, 5u);
+    add_edge_point(ex, oz, 6u);
+    add_edge_point(ox, ez, 9u);
+    add_edge_point(ex, ez, 10u);
     /* River first among the interior, for the same reason as before: vertices
        on both banks make the water edge a crease in the mesh instead of a
        facet that merely straddles the channel. */
@@ -2095,7 +2134,17 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         ny_[k] = u[2]*w[0]-u[0]*w[2];
         nz_[k] = u[0]*w[1]-u[1]*w[0];
         float nl = sqrtf(nx_[k]*nx_[k]+ny_[k]*ny_[k]+nz_[k]*nz_[k]);
-        if (nl < 1e-9f) { nx_[k]=0; ny_[k]=1; nz_[k]=0; }
+        /* A sliver is under a pixel wide, and its normal comes from three nearly
+           collinear points: the direction is noise, and a noise normal shades
+           the hairline dark, which is the thin dark line that used to lie across
+           meadows and along shores. Point it straight up instead. The facet is
+           still drawn, so skipping it cannot leave a pinhole either. */
+        float e0 = u[0]*u[0] + u[2]*u[2];
+        float e1 = w[0]*w[0] + w[2]*w[2];
+        float e2 = (w[0]-u[0])*(w[0]-u[0]) + (w[2]-u[2])*(w[2]-u[2]);
+        float blen = sqrtf(e0 > e1 ? (e0 > e2 ? e0 : e2) : (e1 > e2 ? e1 : e2));
+        int sliver = blen > 1e-6f && nl / blen < 1.0f;
+        if (nl < 1e-9f || sliver) { nx_[k]=0; ny_[k]=1; nz_[k]=0; }
         else { nx_[k]/=nl; ny_[k]/=nl; nz_[k]/=nl; }
         if (ny_[k] < 0.0f) { nx_[k]=-nx_[k]; ny_[k]=-ny_[k]; nz_[k]=-nz_[k]; }
         ntri++;
@@ -2110,25 +2159,43 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
        taken 100 units from its corners and behind a water chord standing over
        a lake, so it is counted here instead of being hunted in a screenshot.
        Each is kept as the worst single chunk: a per-process total would depend
-       on how many chunks happened to stream in, i.e. on the camera. */
-    {
+       on how many chunks happened to stream in, i.e. on the camera.
+       The rim of the grid is excluded: a chunk at the world boundary has its
+       ring clipped by the heightfield, so its fill is degenerate by
+       construction, and it is the one place a player cannot stand. Those facets
+       are real (see the world-edge item in PLAN.md) but they are not this
+       measurement. */
+    if (c0 > 0 && r0 > 0 && c1 < N - 1 && r1 < N - 1) {
         static unsigned char used[MAX_PTS + 3];
         memset(used, 0, (size_t)npts);
         int edge_long = 0, tri_tiny = 0, unused = 0, seam_gap = 0;
-        /* Six cells, not two: a step-4 chunk's own points are four cells apart
-           (plus jitter), so a threshold relative to the tier counts the
-           sampling rule rather than the fill's gaps. Past six cells the edge
-           is the triangulation bridging the empty band beside the border ring. */
-        const float elim = 6.0f * CELL;
+        /* Relative to the fill's own spacing, not the cell: the interior rule
+           already places points up to 36 units apart on flat ground, and a
+           coarse tier places them a tier-interval apart. Past ~2.2x that, the
+           edge is the triangulation bridging a gap it should have filled. */
+        /* relative to the fill's own spacing, with room for the diagonal of a
+           Delaunay cell and the jitter: 4.5x is a facet that is a gap, not a
+           sample */
+        const float elim = 4.5f * fmaxf(36.0f, (float)step * CELL);
         for (int k = 0; k < ndt; k++) {
             if (!dt[k].alive) continue;
             const int v[3] = { dt[k].v[0], dt[k].v[1], dt[k].v[2] };
+            /* Area first: a run of near-collinear border points still yields a
+               few triangles that span it. They are degenerate -- they draw
+               nothing -- and their long "edges" are an artefact of the run, not
+               a facet that needs splitting. */
+            float ax0 = pts_x[v[0]], az0 = pts_z[v[0]];
+            float tri_ar = 0.5f * fabsf((pts_x[v[1]] - ax0) * (pts_z[v[2]] - az0)
+                                      - (pts_z[v[1]] - az0) * (pts_x[v[2]] - ax0));
+            for (int e = 0; e < 3; e++) used[v[e]] = 1;
+
+            float best = 0.0f, third = 0.0f;
             for (int e = 0; e < 3; e++) {
                 int pa = v[e], pb = v[(e + 1) % 3];
-                used[pa] = 1;
                 float dx = pts_x[pb] - pts_x[pa], dz = pts_z[pb] - pts_z[pa];
                 float l = sqrtf(dx*dx + dz*dz);
-                if (l > elim) edge_long++;
+                if (l > best) { third = best; best = l; }
+                else if (l > third) third = l;
                 /* A chain edge longer than one cell only exists at a coarse
                    tier, and it is shared with the neighbour's *finer* chain:
                    the deviation between this chord and the ground is the step
@@ -2142,10 +2209,12 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                     if (dev > 1.0f) seam_gap++;
                 }
             }
-            float ax = pts_x[v[0]], az = pts_z[v[0]];
-            float ar = 0.5f * fabsf((pts_x[v[1]] - ax) * (pts_z[v[2]] - az)
-                                  - (pts_z[v[1]] - az) * (pts_x[v[2]] - ax));
-            if (ar < 4.0f) tri_tiny++;
+            /* Width, not area: a 200-by-1 sliver along a border run has 100
+               units of area and is still not a surface. Below a unit it draws
+               less than a pixel and has no business being called a facet. */
+            float width = best > 0.0f ? 2.0f * tri_ar / best : 0.0f;
+            if (width < 1.0f) tri_tiny++;          /* degenerate or sliver */
+            else if (best > elim) edge_long++;
         }
         for (int p = 0; p < npts; p++) if (!used[p]) unused++;
         if (edge_long > c_edge_long) c_edge_long = edge_long;
@@ -2323,8 +2392,12 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         tri_flow[k][0] = fx2; tri_flow[k][1] = fz2;
     }
     if (wet_col_dry > c_wet_col_dry) c_wet_col_dry = wet_col_dry;
-    chunks[ci].cy_top = (int)top;
-    chunks[ci].cy_bot = (int)bot;
+    /* Bounds are written by the builder and read by the cull on the render
+       thread, which may be drawing the previous build of this chunk at the same
+       time: a relaxed atomic is the honest description of that -- the values are
+       a bound, and one build stale is still a bound. */
+    __atomic_store_n(&chunks[ci].cy_top, (int)top, __ATOMIC_RELAXED);
+    __atomic_store_n(&chunks[ci].cy_bot, (int)bot, __ATOMIC_RELAXED);
 
     /* --- emit ------------------------------------------------------------
        Trees are placed globally (the camera and the diagnostics walk that one
@@ -2756,7 +2829,7 @@ void *builder_main(void *arg) {
 
         pthread_mutex_lock(&job_mu);
         chunks[ci].data = copy;
-        chunks[ci].words = copy ? words : 0;
+        __atomic_store_n(&chunks[ci].words, copy ? words : 0, __ATOMIC_RELAXED);
         chunk_set_state(&chunks[ci], CHUNK_DONE);   /* publishes data/words */
         jobs_in_flight--;
         pthread_mutex_unlock(&job_mu);

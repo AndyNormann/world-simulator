@@ -758,17 +758,20 @@ void render(int w, int h) {
                has published a new count, the render thread has not uploaded it
                yet), so it must not be drawn. */
             int st = chunk_state(&chunks[i]);
-            if ((st != CHUNK_READY && st != CHUNK_BUILDING) || chunks[i].words == 0
+            int words = __atomic_load_n(&chunks[i].words, __ATOMIC_RELAXED);
+            if ((st != CHUNK_READY && st != CHUNK_BUILDING) || words == 0
                 || chunks[i].buf.id == SG_INVALID_ID) continue;
             float ccx = ((float)chunks[i].cx + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
             float ccz = ((float)chunks[i].cz + 0.5f) * CHUNK_WORLD - TERRAIN_WORLD * 0.5f;
-            float ccy = 0.5f * (float)(chunks[i].cy_top + chunks[i].cy_bot);
+            int cy_top = __atomic_load_n(&chunks[i].cy_top, __ATOMIC_RELAXED);
+            int cy_bot = __atomic_load_n(&chunks[i].cy_bot, __ATOMIC_RELAXED);
+            float ccy = 0.5f * (float)(cy_top + cy_bot);
             /* The sphere has to cover the whole box, not a guessed radius: a
                chunk whose summit is still on screen used to disappear the
                moment its centre left the frame, because the sphere was sized
                from the columns and not from the ground under them. */
             float box_h = CHUNK_WORLD * 0.7072f + 90.0f;   /* half diagonal + trees */
-            float box_v = 0.5f * (float)(chunks[i].cy_top - chunks[i].cy_bot) + 90.0f;
+            float box_v = 0.5f * (float)(cy_top - cy_bot) + 90.0f;
             float cdx = ccx - cam_x, cdy = ccy - cam_y, cdz = ccz - cam_z;
             float cdepth = cdx * fx + cdy * fy + cdz * fz;
             if (!nocull && cdepth < -sqrtf(box_h * box_h + box_v * box_v)) continue;
@@ -796,9 +799,9 @@ void render(int w, int h) {
             }
             bindings.vertex_buffers[0] = chunks[i].buf;
             sg_apply_bindings(&bindings);
-            sg_draw(0, chunks[i].words / VERT_FLOATS, 1);
+            sg_draw(0, words / VERT_FLOATS, 1);
             chunks_drawn++;
-            drawn_words += chunks[i].words;
+            drawn_words += words;
         }
     }
     if (getenv("LODDBG"))

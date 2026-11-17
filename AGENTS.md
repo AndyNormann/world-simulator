@@ -434,6 +434,19 @@ alone can silently produce a header that does not match the headers.
   each is reported as the worst single chunk, so the number describes the fill
   rather than how many chunks the camera happened to stream in.
   `replays/artifacts.txt` renders the reported cameras and asserts them.
+- **The chunk border ring is deliberately not straight, and only just.** Ring
+  points sit on the cell lattice, and a collinear run is degenerate for the
+  fill's circumcircle test: it leaves points out and spans 2-6 intervals with one
+  350-unit triangle -- the sand wedges, the dark shards, the hairlines, the seam
+  chords, all one fault. Each point is offset perpendicular by up to +-0.45 units,
+  hashed from its own *world* cell indices and applied along a fixed world axis,
+  so the neighbour computes the same point and the chain stays shared. Do not
+  increase that offset: `add_point` allows half a unit outside the rect, so a
+  larger one makes one side drop the point and crack the seam.
+- **A sliver is drawn with an up normal, never dropped.** Under a unit of width
+  the facet is sub-pixel and its normal is noise, which shaded it dark (the thin
+  dark line across a meadow). Dropping it leaves a pinhole that shows the sea
+  through the grass.
 - **A facet's colour comes from the facet.** It is sampled at the centre, which
   is a fair sample of a facet that is wholly one side of the waterline and a
   wrong one for a facet thrown across it: the centre can be seabed while a corner
