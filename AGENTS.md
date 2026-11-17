@@ -291,6 +291,17 @@ streaming take minutes). macOS (Metal) and Linux (GL 4.1 core): GL is the
 *gated* backend, Metal is supported but ungated — see "Two backends, two golden
 sets" above.
 
+On Linux you need clang, make and the X11/GL headers that sokol_app and
+sokol_gfx are compiled against:
+
+    sudo apt install clang make libgl-dev libx11-dev libxi-dev libxcursor-dev
+
+then `./build.sh && tools/goldens.sh` — the first run must *record* the goldens,
+because a golden is only meaningful on the platform that produced it. After that
+`tools/check.sh --slow` works as it does on the Mac, with one caveat: `shot` and
+`replay` need an X display for their GLX context, so under Wayland XWayland must
+be running for the gate as well as for play.
+
 ## Vendored
 
 See `libs/VENDORED.md`. sokol and sokol-shdc are pinned together; bumping one
