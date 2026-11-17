@@ -1939,6 +1939,28 @@ float facet_shade(float nx, float ny, float nz, float off, float x, float z) {
 /* Emit a convex polygon (already in x, z with a per-point y) as a triangle
    fan. The water and the bed are both emitted through this, on the same
    polygon, so their common edge cannot disagree. */
+/* The baked ground colour at a world position, bilinearly. It used to be
+   inlined once, at a facet's centre; a facet has three corners and they can be
+   a hundred units apart, so the centre is not a sample *of* the facet when the
+   facet spans the shore or a ridge. That is what painted a navy plate on an
+   island and meadow green on a rock face. */
+static void ground_colour_at(const float *cr, const float *cg, const float *cb,
+                             float x, float z, float out[3]) {
+    float gx = (x + TERRAIN_WORLD * 0.5f) / CELL;
+    float gz = (z + TERRAIN_WORLD * 0.5f) / CELL;
+    int x0 = (int)floorf(gx), z0 = (int)floorf(gz);
+    if (x0 < 0) x0 = 0; if (x0 > N-2) x0 = N-2;
+    if (z0 < 0) z0 = 0; if (z0 > N-2) z0 = N-2;
+    float fx = gx - x0, fz = gz - z0;
+    if (fx < 0.0f) fx = 0.0f; if (fx > 1.0f) fx = 1.0f;
+    if (fz < 0.0f) fz = 0.0f; if (fz > 1.0f) fz = 1.0f;
+    const int i00 = z0*N+x0, i10 = i00+1, i01 = i00+N, i11 = i01+1;
+    #define BIL(arr) (((arr[i00]*(1-fx)+arr[i10]*fx))*(1-fz) \
+                    + ((arr[i01]*(1-fx)+arr[i11]*fx))*fz)
+    out[0] = BIL(cr); out[1] = BIL(cg); out[2] = BIL(cb);
+    #undef BIL
+}
+
 static void emit_fan(int nv, const float xz[5][2], const float *y, const float *nrm,
                      const float *col, float fx, float fz, const float *bc) {
     for (int t = 1; t + 1 < nv; t++) {
@@ -2155,25 +2177,36 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         if (cyw > top) top = cyw;
         if (cyw < bot) bot = cyw;
 
-        float r, g, b;
+        /* Dry corners decide the colour of a facet that pokes out of the water.
+           A facet spanning the shore used to be painted with the cell under its
+           centre, which can be the seabed while a corner stands on the beach --
+           that is the navy plate lying on an island. Its dry corners are the
+           part of it the player sees, so their mean is the colour it should
+           carry. A facet that is wholly below the surface keeps the centre
+           sample: it *is* seabed, and averaging in a dry corner would only make
+           the water look dirty. The look is otherwise unchanged -- one colour
+           per facet, flat-shaded, no seams between facets. */
+        float r, g, b, cc[3];
         {
-            float gx = (cxw + TERRAIN_WORLD * 0.5f) / CELL;
-            float gz = (czw + TERRAIN_WORLD * 0.5f) / CELL;
-            int x0 = (int)floorf(gx), z0 = (int)floorf(gz);
-            if (x0 < 0) x0 = 0; if (x0 > N-2) x0 = N-2;
-            if (z0 < 0) z0 = 0; if (z0 > N-2) z0 = N-2;
-            float fx = gx - x0, fz = gz - z0;
-            if (fx < 0.0f) fx = 0.0f; if (fx > 1.0f) fx = 1.0f;
-            if (fz < 0.0f) fz = 0.0f; if (fz > 1.0f) fz = 1.0f;
-            int i00 = z0*N+x0, i10 = i00+1, i01 = i00+N, i11 = i01+1;
-            #define SAMP(arr) ((arr[i00]*(1-fx)+arr[i10]*fx)*(1-fz) + (arr[i01]*(1-fx)+arr[i11]*fx)*fz)
-            r = SAMP(cr); g = SAMP(cg); b = SAMP(cb);
-            #undef SAMP
+            int ndry = (ch[0] > 0.0f) + (ch[1] > 0.0f) + (ch[2] > 0.0f);
+            if (ndry == 0 || ndry == 3) {
+                /* wholly one side of the waterline: the centre is a fair sample
+                   and the old path costs one lookup instead of three */
+                ground_colour_at(cr, cg, cb, cxw, czw, cc);
+                r = cc[0]; g = cc[1]; b = cc[2];
+            } else {
+                float dr = 0.0f, dg = 0.0f, db = 0.0f;
+                for (int q = 0; q < 3; q++) {
+                    if (ch[q] <= 0.0f) continue;
+                    ground_colour_at(cr, cg, cb, pts_x[dt[k].v[q]], pts_z[dt[k].v[q]], cc);
+                    dr += cc[0]; dg += cc[1]; db += cc[2];
+                }
+                r = dr / (float)ndry; g = dg / (float)ndry; b = db / (float)ndry;
+            }
         }
-        /* The colour is one sample and the geometry is three: a facet spanning
-           the shore is painted with the cell under its centre, which can be the
-           seabed while a corner stands on the beach -- the navy plate lying on
-           an island. Counted here (P0), fixed by sampling the facet (P1). */
+        /* How many facets the centre sample would have painted with the seabed
+           while they have dry ground: the population this rule protects, not a
+           fault. */
         if (sample_height(cxw, czw) <= 0.0f) {
             float cmax = ch[0] > ch[1] ? ch[0] : ch[1];
             if (ch[2] > cmax) cmax = ch[2];

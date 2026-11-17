@@ -691,7 +691,7 @@ Nothing arriving during a flight was measured, by the way: `chunks_drawn`,
 pan moving every pixel, not streaming. If a chunk ever does arrive mid-flight it
 adds its own area to `fly`, which is what the column is for.
 
-### P1 — colour from the facet, not from one point (1 session)
+### P1 — colour from the facet, not from one point — **done**
 
 Fix family 1 at its cause. `chunk_build` samples `bake_r/g/b` once, at the
 centroid. Sample it at all three corners and use their **mean** as the facet's
@@ -701,8 +701,27 @@ no longer be 100% submarine navy. Then assert the invariant: *no facet whose
 corners are all above the waterline may take a colour whose sample cell is
 underwater*. That is `wet_col_dry` in the counter list, and it is the exact bug.
 
-Risk: every steep slope shifts slightly; re-record goldens and compare mean
-luminance per view numerically (a resized composite has lied before).
+Built as **the mean of the facet's dry corners when the facet straddles the
+waterline**, not as a mean of all three for everything. The first version
+(three corners, always) was measured and rejected: it moved 11.5% of the golden
+`high` frame, because at tier 4 nearly every coastal facet has one sand corner
+and one grass corner, so every shore grew a pale halo -- a global look change
+bought for a handful of outliers. The straddling case is the one where the
+centre sample is *actually wrong about the class* (the centre cell is seabed
+while a corner stands on the beach), and that is what the fix targets: wholly dry
+or wholly submerged facets keep the single centre lookup, which is also the fast
+path (one bilinear fetch instead of three for ~all facets).
+
+Measured at the committed goldens: dusk 0.136%, high 0.213%, low 0.042% -- a
+real look change, but inside the 0.3% tolerance, so the goldens were not
+re-recorded. The reported artifact (the navy plate at the foot of the monolith)
+now takes the colour of the beach it is made of, so it reads as a sand spit
+instead of a shard of foreign geometry.
+
+`wetcoldry` stays ~105 per worst chunk and that is the honest reading: with the
+rule in place it measures the *population the rule protects* (a centre sample in
+the sea on a facet with dry ground), not a fault. What the crop still shows is a
+100-unit sand wedge rather than a 100-unit navy wedge -- geometry, which is P2.
 
 ### P2 — no facet nobody designed (1-2 sessions)
 

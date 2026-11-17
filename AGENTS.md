@@ -434,6 +434,14 @@ alone can silently produce a header that does not match the headers.
   each is reported as the worst single chunk, so the number describes the fill
   rather than how many chunks the camera happened to stream in.
   `replays/artifacts.txt` renders the reported cameras and asserts them.
+- **A facet's colour comes from the facet.** It is sampled at the centre, which
+  is a fair sample of a facet that is wholly one side of the waterline and a
+  wrong one for a facet thrown across it: the centre can be seabed while a corner
+  is beach, which paints a navy plate on an island. A straddling facet takes the
+  mean of its *dry* corners; a wholly submerged one keeps the centre sample,
+  because it is seabed and averaging in a beach would only dirty the water. Do
+  not "fix" this by averaging all three corners always -- measured, that turns
+  every coastal facet into a pale mix and moves 11.5% of the high view.
 - **`pop` and `fly` exist because every other flicker column measures a converged
   accumulator.** TAA averages a one-frame change over ten, so `walk` cannot see
   the thing an "it popped" report is about: `pop` clears the history before every
