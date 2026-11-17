@@ -4,15 +4,12 @@
  * sokol headers and driver code. Here it is compiled once and cached by make;
  * only a change under libs/sokol or to the defines below rebuilds it.
  *
- * Any define that changes the sokol API surface (SOKOL_METAL, SOKOL_NO_ENTRY,
- * SOKOL_DEBUG) must be identical in src/main.c or the two TUs disagree about
- * the declarations they share.
+ * Any define that changes the sokol API surface (the backend, SOKOL_NO_ENTRY,
+ * SOKOL_DEBUG) must be identical in src/game.h -- which is why both take it
+ * from src/sokol_backend.h and neither chooses it itself.
  */
-#define SOKOL_DEBUG
 #define SOKOL_IMPL
-/* never grab focus on launch: see the note in sokol_app.h */
-#define SAPP_DONT_ACTIVATE
-#define SOKOL_METAL
+#include "sokol_backend.h"   /* backend + SOKOL_DEBUG + SAPP_DONT_ACTIVATE */
 #define SOKOL_NO_ENTRY
 #include "sokol_app.h"
 #include "sokol_gfx.h"

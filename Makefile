@@ -1,4 +1,7 @@
-# Build for the terrain viewer (macOS / Metal only).
+# Build for the terrain viewer: Metal on macOS, GL core elsewhere.
+#
+#   make BACKEND=gl     same build, GL backend (how the GL path is verified on a
+#                       Mac; on Linux this is the default and the only one)
 #
 #   make            the game            -> build/game
 #   make -j         same, objects in parallel
@@ -39,12 +42,53 @@ OPT       := -O2
 LDEXTRA   :=
 OBJDIR    := build
 endif
+# A backend switch must not relink the other backend's objects, so the GL build
+# owns its own directory unless MODE already did (debug/tsan keep theirs).
+ifeq ($(BACKEND),gl)
+  ifeq ($(MODE),game)
+    OBJDIR := build/gl
+  else
+    OBJDIR := $(OBJDIR)-gl
+  endif
+endif
+
+# --- platform and backend ---------------------------------------------------
+# Metal on macOS, GL core on Linux. `BACKEND=gl` forces GL on macOS, which is
+# how the GL path gets exercised on a machine that has a working GPU and no
+# Linux box: the same code, the same GLSL, the same targets.
+UNAME   := $(shell uname -s)
+BACKEND ?= $(if $(filter Darwin,$(UNAME)),metal,gl)
+
+ifeq ($(BACKEND),gl)
+  BACKEND_DEF := -DSOKOL_BACKEND_GL
+  ifeq ($(UNAME),Darwin)
+    FRAMEWORKS := -framework Cocoa -framework QuartzCore -framework AudioToolbox -framework OpenGL
+  else
+    FRAMEWORKS :=
+  endif
+else
+  BACKEND_DEF :=
+  FRAMEWORKS := -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox
+endif
+
+# On macOS every TU is Objective-C: Cocoa's headers (which sokol_app includes for
+# both backends) do not parse as C. Elsewhere nothing here mentions ObjC.
+ifeq ($(UNAME),Darwin)
+  SRCX    := -x objective-c
+  CXXSRCX := -x objective-c++
+  OBJCFLAGS := -fno-objc-arc
+  LDLIBS := -lm -lpthread
+else
+  SRCX    :=
+  CXXSRCX := -x c++
+  OBJCFLAGS :=
+  # sokol_app loads libX11/libGL at runtime, so -ldl; GL symbols are linked
+  # directly by sokol_gfx (GL_GLEXT_PROTOTYPES), so -lGL.
+  LDLIBS := -lm -lpthread -ldl -lGL -lX11
+endif
 
 CFLAGS    := -std=c99 -g -Wall -Wextra -Wshadow -Werror -Wno-deprecated-declarations \
-             $(OPT) -I libs -I libs/sokol -I libs/stb -I src
-OBJCFLAGS := -fno-objc-arc
-FRAMEWORKS := -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox
-LDLIBS    := -lm -lpthread
+             $(OPT) $(BACKEND_DEF) -I libs -I libs/sokol -I libs/stb -I src
 
 HEADERS   := $(wildcard libs/sokol/*.h src/*.h)
 
@@ -68,7 +112,7 @@ ifneq ($(shell command -v ccache 2>/dev/null),)
 CXX      := ccache clang++
 endif
 CXXFLAGS := -std=c++11 -g -Wall -Wextra -Wno-unused-parameter $(OPT) \
-            -I libs -isystem libs/imgui -I libs/sokol -I libs/stb -I src
+            $(BACKEND_DEF) -I libs -isystem libs/imgui -I libs/sokol -I libs/stb -I src
 
 # dear imgui itself, compiled once and never touched again
 IMGUI_SRC := imgui imgui_draw imgui_tables imgui_widgets
@@ -77,11 +121,11 @@ $(foreach f,$(IMGUI_SRC),$(eval $(OBJDIR)/$(f).o: ; @mkdir -p $(OBJDIR); $(CXX) 
 
 $(OBJDIR)/%.o: src/%.cpp $(HEADERS) $(wildcard libs/imgui/*.h) libs/sokol/sokol_imgui.h Makefile
 	@mkdir -p $(OBJDIR)
-	$(CXX) -x objective-c++ -fno-objc-arc $(CXXFLAGS) -MMD -MP -c $< -o $@
+	$(CXX) $(CXXSRCX) $(OBJCFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 $(OBJDIR)/%.o: src/%.c $(HEADERS) Makefile
 	@mkdir -p $(OBJDIR)
-	$(CC) -x objective-c $(CFLAGS) $(OBJCFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(SRCX) $(CFLAGS) $(OBJCFLAGS) -MMD -MP -c $< -o $@
 
 -include $(OBJDIR)/*.d
 

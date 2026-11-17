@@ -1012,6 +1012,59 @@ Three targets are not met and the plan is wrong about them, not the renderer:
 So the honest statement of "solid" is the gates, not the table: every number is
 printed, bounded, and a regression fails `check.sh --slow`.
 
+## Moving development to Linux — the port, and what it costs
+
+The renderer was macOS/Metal only, and the GL, D3D11 and X11 paths had been
+deleted rather than disabled. Development moves to a Linux laptop, so GL came
+back — as the *gated* backend, with Metal kept but ungated:
+
+- **Backend selection is one header** (`src/sokol_backend.h`), included by
+  `game.h` and `sokol_impl.c` so the two TUs that must agree about the sokol API
+  surface cannot drift. Default: Metal on macOS, GL 4.1 core elsewhere;
+  `BACKEND=gl` forces GL anywhere, which is how the GL path is verified on a Mac.
+- **What differed was 110 lines**, all of it in three functions: the offscreen
+  targets, the device or context, and the readback. They stay as whole functions
+  per backend in one contiguous block, so one branch can be read against the other
+  in a single screen and touching one cannot quietly change the other. Everything
+  else in `render.c` was already sokol-gfx.
+- **`sg_image_desc` already carried `.gl_texture`/`.gl_texture_target`** as well as
+  `.mtl_texture`, so the "create the texture natively, wrap it" shape survived
+  unchanged. On GL the renderer always owns its history textures, windowed or not:
+  that removes the need for a `sg_mtl_query_image_info` equivalent and keeps a
+  windowed screenshot and `game shot` the same code.
+- **A still frame still needs no window.** macOS gets a CGL context, Linux a GLX
+  pbuffer (XWayland under Wayland). `sapp_run` is now only for the windowed game,
+  which is what keeps a golden diff independent of a compositor.
+- **Goldens are per platform.** Metal and GL differ at edges (measured: 3.4% mean
+  at ssaa 2, 1.7% at ssaa 4, and the heat map is nothing but facet edges), so one
+  set would have to be diffed at a tolerance that catches nothing.
+  `tests/golden/<platform>/`, recorded and diffed on the platform that produced
+  it; a cross-platform diff is a report, not a gate.
+- **macOS is supported, not gated.** The Mac is out of the loop for regular
+  builds, so the Metal branch is kept working by inspection only. That is a real
+  debt and it is recorded as one: the divergence is three functions, it is not to
+  be edited without the Mac, and if it rots the answer is to retire Metal and run
+  GL on both — macOS GL is deprecated by Apple, so that is borrowing, but it is
+  *one* path instead of an unverifiable second.
+
+Two defects surfaced by the GL path, both real on both backends:
+
+- The TAA pass sampled the 32-bit float linear depth with the *filtering* sampler
+  while the shader declared a non-filtering one. Metal tolerates it; Apple's GL
+  has no `ARB_texture_float_linear`, so the unit was "unloadable" and read zero,
+  silently disabling reprojection. Nearest now, which is also what the value is.
+- A fall's water sheet was offset straight up by 0.4 units, not along the facet
+  normal, so on a face steeper than 45 degrees it sat *inside* the rock over half
+  the facet and the two surfaces fought for the same pixels — a dotted line down
+  every fall, visible on GL and occasionally on Metal.
+
+What is **not** verified: Linux itself. The port was built and exercised end to
+end with `BACKEND=gl` on macOS (Apple's GL-on-Metal shim, GL 4.1), which shares
+all of the code, the shaders and the target setup, but none of the Makefile's
+Linux flags, the GLX context, the Mesa driver or `libX11`/`libGL` availability.
+The first Linux run is where those get proven, and `tests/golden/linux/` has to be
+recorded there before the golden step can pass — `tools/check.sh` says so.
+
 ### Deliberately not planned
 
 - MSAA: the temporal pass has to sample depth, so a multisampled target cannot be

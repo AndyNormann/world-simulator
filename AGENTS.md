@@ -255,12 +255,41 @@ wetcoldry seamgap`. `tris` and `chunks_drawn` need rendering, so they are skippe
 
 A failing assert prints `file:line: field is X, expected OP Y (t=Zs)` and exits 1.
 
+## Two backends, two golden sets
+
+- **Metal on macOS, GL core elsewhere.** `src/sokol_backend.h` decides, the
+  Makefile passes `-DSOKOL_BACKEND_GL` when `BACKEND=gl`; the two TUs that must
+  agree (`game.h`, `sokol_impl.c`) both take it from that one header.
+- **`make BACKEND=gl` on macOS** builds the GL path and is how it is verified
+  without a Linux box: same code, same GLSL, same targets, and `build/gl/` is a
+  separate object directory so switching backends cannot relink the wrong
+  objects. `BACKEND=gl tools/check.sh` runs the gate against it.
+- **`shot`/`replay` get a context, not a window:** CGL on macOS, GLX (a pbuffer)
+  on Linux, both created in `render.c`'s GL branch. On Linux that needs an X
+  display — under Wayland, XWayland. `shot` still never opens a window, which is
+  what makes a still frame independent of a compositor.
+- **Goldens are per platform** (`tests/golden/<uname>/`): Metal and GL cannot
+  produce the same bytes at edges, and one shared set would have to be diffed at
+  a tolerance that catches nothing. `GOLDEN_PLATFORM=` overrides the directory.
+- **macOS is supported, not gated** (decided when development moved to Linux): the
+  Metal branch is kept working by inspection only, so it is *not* to be edited
+  without the Mac at hand. It is three whole functions (`targets_make`,
+  `headless_gfx_setup`, `headless_readback`) in one block per backend, so a change
+  to one can be read against the other in a single screen.
+- **The GL branch is the one with the gate**, so GL-only hazards are the ones to
+  remember: a GLSL compiler strips uniform members no stage reads, and sokol then
+  rejects `sg_apply_uniforms` with a *size* mismatch (a Metal-only build does not
+  see it); and Apple's GL has no `ARB_texture_float_linear`, so a 32-bit float
+  texture cannot be filtered — sampled with a filtering sampler it is
+  "unloadable" and reads *zero*.
+
 ## Build
 
 `./build.sh` (game), `./build.sh test` (unit tests, ASan+UBSan),
 `./build.sh debug` (game with sanitizers, `-O1`: at `-O0` the horizon bake makes
-streaming take minutes). macOS only, Metal only — the GL, D3D11 and X11 paths
-were deleted, not disabled.
+streaming take minutes). macOS (Metal) and Linux (GL 4.1 core): GL is the
+*gated* backend, Metal is supported but ungated — see "Two backends, two golden
+sets" above.
 
 ## Vendored
 

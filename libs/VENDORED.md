@@ -7,7 +7,8 @@ bumping one without the other can produce a header that does not match.
 | What | Version |
 |---|---|
 | `libs/sokol/*.h` | floooh/sokol master (copied 2026-11-12) |
-| `tools/sokol-shdc` | built from floooh/sokol-tools `f1dcd17` |
+| `tools/sokol-shdc` | built from floooh/sokol-tools `f1dcd17` (macOS) |
+| `tools/sokol-shdc-linux` | the same commit, built on Linux — needed only to regenerate shaders there; `src/shaders.h` is checked in |
 | stb | `libs/stb` (stb_image, stb_image_write, stb_perlin, …) |
 | `libs/imgui/*` | ocornut/imgui **v1.92.4** (imgui.cpp, imgui_draw.cpp, imgui_tables.cpp, imgui_widgets.cpp + headers) |
 | `libs/sokol/sokol_imgui.h` | floooh/sokol master (same copy date family as the rest of libs/sokol); needs imgui >= 1.92 for `ImTextureData` |
@@ -18,7 +19,12 @@ bumping one without the other can produce a header that does not match.
 
 `-b` means the Metal target is precompiled bytecode (needs the Metal toolchain:
 `xcodebuild -downloadComponent metaltoolchain`); the glsl410 target stays source.
-Shaders are therefore validated when `tools/shaders.sh` runs, not at startup.
+Shaders are therefore validated when `tools/shaders.sh` runs, not at startup —
+and where the Metal toolchain is missing the script drops `-b` and emits MSL
+*source*, which sokol compiles at startup. Either header builds on both
+platforms, so one checked-in file serves both. The script also runs
+`glslangValidator` over the extracted glsl410 when it is installed, because the
+GL backend compiles GLSL at runtime.
 
 dear imgui is the project's only C++, and it is `-w` (compiled quiet) and
 `-isystem` (warnings off for the headers) in exactly one place: `src/ui.cpp`

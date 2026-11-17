@@ -198,16 +198,34 @@ static sg_sampler lin_smp, near_smp;
 static sg_image sh_img[2];
 static sg_view sh_view[2];
 
+/* IEEE half, written out bit by bit: `__fp16` is a compiler extension whose
+   availability depends on the target (and the format is the texture's, not the
+   language's), so the bytes are produced explicitly instead. Only angles go
+   through here, so denormals and NaN cannot occur; underflow to zero and
+   saturation are still handled because they cost two lines. */
+static uint16_t half_bits(float v) {
+    uint32_t f;
+    memcpy(&f, &v, sizeof f);
+    uint32_t sign = (f >> 16) & 0x8000u;
+    int e = (int)((f >> 23) & 0xffu) - 127 + 15;
+    uint32_t m = f & 0x7fffffu;
+    if (e <= 0) return (uint16_t)sign;
+    m += 0x1000u;                       /* round to nearest, as the hardware does */
+    if (m & 0x800000u) { m = 0; e++; }
+    if (e >= 31) return (uint16_t)(sign | 0x7c00u);
+    return (uint16_t)(sign | ((uint32_t)e << 10) | (m >> 13));
+}
+
 static void horizon_images_make(void) {
     const float *f = horizon_field();
     /* RGBA16F: half-float storage, because a 32-bit float image cannot be
        filtered on Metal -- and this one must interpolate across texels. */
-    static __fp16 plane[2][HOR_G * HOR_G * 4];
+    static uint16_t plane[2][HOR_G * HOR_G * 4];
     for (int j = 0; j < HOR_G; j++)
         for (int i = 0; i < HOR_G; i++)
             for (int k = 0; k < SUN_SECTORS; k++)
                 plane[k / 4][(j * HOR_G + i) * 4 + (k % 4)] =
-                    (__fp16)f[(j * HOR_G + i) * SUN_SECTORS + k];
+                    half_bits(f[(j * HOR_G + i) * SUN_SECTORS + k]);
     for (int t = 0; t < 2; t++) {
         sh_img[t] = sg_make_image(&(sg_image_desc){
             .width = HOR_G, .height = HOR_G,
@@ -230,24 +248,27 @@ static int taa_phase = 0;
 static float taa_last_x = 0.0f, taa_last_y = 0.0f, taa_last_z = 0.0f;
 static int hist_cur = 0, hist_drawn = 0;
 static int tgt_w = 0, tgt_h = 0;
+#define TAA_BLEND 0.90f
+
+/* ---- the platform half of the renderer -------------------------------------
+   Everything else in this file is sokol-gfx and portable. What differs between
+   Metal and GL is three functions and about 110 lines: the offscreen targets (and
+   the textures the readback owns), the device or context, and the readback
+   itself. They are kept as whole functions per backend rather than conditionals
+   sprinkled through shared code, so the two branches can be compared in one
+   screen -- and so that touching one cannot quietly change the other.
+
+   The GL branch is the one that is verified by the gate; Metal is kept working
+   by inspection (see AGENTS.md, "macOS is supported, not gated"). */
+#if GAME_BACKEND_METAL
 static id<MTLTexture> mtl_hist[2];
 static id<MTLTexture> mtl_color, mtl_depth;
 
-#define TAA_BLEND 0.90f
+/* Injected textures are created here and not released: a known leak on window
+   resize and rebuild, left alone deliberately -- this branch is no longer
+   covered by the gate, so it is changed only when the Mac is at hand. */
+static void native_targets_free(void) { }
 
-static void targets_free(void) {
-    if (tgt_w == 0) return;
-    for (int i = 0; i < 2; i++) { sg_destroy_view(hist_view[i]); sg_destroy_view(hist_tex[i]);
-                                  sg_destroy_image(hist_img[i]); }
-    sg_destroy_view(hd_color_view); sg_destroy_view(k_color_tex);
-    sg_destroy_view(hd_lin_view); sg_destroy_view(k_lin_tex);
-    sg_destroy_view(hd_depth_view);
-    sg_destroy_image(hd_color_img); sg_destroy_image(hd_lin_img); sg_destroy_image(hd_depth_img);
-    tgt_w = tgt_h = 0;
-}
-
-/* `inject` is the headless path: we make the Metal textures ourselves so the
-   readback can blit them without asking sokol for a pointer it does not expose. */
 static void targets_make(int w, int h, int inject) {
     tgt_w = w; tgt_h = h;
     id<MTLTexture> c = nil, l = nil, d = nil;
@@ -310,12 +331,6 @@ static void targets_make(int w, int h, int inject) {
     prev_vp_valid = 0.0f;
 }
 
-void targets_ensure(int w, int h) {
-    if (w == tgt_w && h == tgt_h) return;
-    targets_free();
-    targets_make(w, h, headless);
-}
-
 void headless_gfx_setup(void) {
     mtl_device = MTLCreateSystemDefaultDevice();
     if (!mtl_device) { fprintf(stderr, "headless: no Metal device\n"); exit(1); }
@@ -370,6 +385,197 @@ void headless_readback(unsigned char *dst) {
     memcpy(dst, [buf contents], (size_t)row * (size_t)fb_h);
     [buf release];
 }
+
+#else   /* GAME_BACKEND_GL */
+/* sokol_gfx links GL directly (no runtime loader), so the platform code here is
+   only the context for the headless modes -- there is no window then, and a GL
+   context needs a surface -- and the readback.
+
+   GL always owns the history textures, windowed or not: `sg_image_desc` gives no
+   portable way to ask sokol for the raw texture, and reading our own is what
+   keeps `game shot` and a windowed screenshot the same code. The scene targets
+   are sokol's, so the pipeline formats and sokol's own pixel formats cannot
+   disagree. */
+static GLuint gl_hist[2];
+
+static void native_targets_free(void) {
+    if (gl_hist[0] || gl_hist[1]) glDeleteTextures(2, gl_hist);
+    gl_hist[0] = gl_hist[1] = 0;
+}
+
+static void targets_make(int w, int h, int inject) {
+    (void)inject;
+    tgt_w = w; tgt_h = h;
+    for (int i = 0; i < 2; i++) {
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        /* glTexImage2D, not glTexStorage2D: storage is GL 4.2 and the target is
+           4.1 core, which is what macOS GL offers and therefore what the GL path
+           is verified against. */
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        gl_hist[i] = t;
+    }
+    hd_color_img = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_RGBA8,
+                    .usage.color_attachment = true, .label = "scene-color" });
+    hd_lin_img = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_R32F,
+                    .usage.color_attachment = true, .label = "scene-lin" });
+    hd_depth_img = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_DEPTH,
+                    .usage.depth_stencil_attachment = true, .label = "scene-depth" });
+    for (int i = 0; i < 2; i++) {
+        hist_img[i] = sg_make_image(&(sg_image_desc){ .width = w, .height = h,
+                    .pixel_format = SG_PIXELFORMAT_RGBA8,
+                    .usage.color_attachment = true,
+                    .gl_texture = gl_hist[i],
+                    .gl_texture_target = GL_TEXTURE_2D,
+                    .label = i ? "taa-hist-1" : "taa-hist-0" });
+    }
+    hd_color_view = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hd_color_img } });
+    hd_lin_view = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hd_lin_img } });
+    hd_depth_view = sg_make_view(&(sg_view_desc){ .depth_stencil_attachment = { .image = hd_depth_img } });
+    k_color_tex   = sg_make_view(&(sg_view_desc){ .texture = { .image = hd_color_img } });
+    k_lin_tex     = sg_make_view(&(sg_view_desc){ .texture = { .image = hd_lin_img } });
+    for (int i = 0; i < 2; i++) {
+        hist_view[i] = sg_make_view(&(sg_view_desc){ .color_attachment = { .image = hist_img[i] } });
+        hist_tex[i]  = sg_make_view(&(sg_view_desc){ .texture = { .image = hist_img[i] } });
+    }
+    hist_cur = 0;
+    prev_vp_valid = 0.0f;
+}
+
+/* A context without a window, because `shot` may not open one: the determinism
+   story is that a still frame does not depend on a compositor. macOS uses CGL
+   (that is how the GL path is verified without a Linux box); Linux uses GLX and
+   needs an X display -- under Wayland, that is XWayland. */
+static void gl_context_make(void) {
+#ifdef __APPLE__
+    CGLPixelFormatAttribute pf[] = {
+        kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_GL4_Core,
+        kCGLPFAColorSize, (CGLPixelFormatAttribute)24,
+        kCGLPFADepthSize, (CGLPixelFormatAttribute)24,
+        (CGLPixelFormatAttribute)0 };
+    CGLPixelFormatObj pix = NULL;
+    GLint npix = 0;
+    if (CGLChoosePixelFormat(pf, &pix, &npix) != kCGLNoError || !pix) {
+        fprintf(stderr, "headless: no GL 4.1 core pixel format\n");
+        exit(1);
+    }
+    CGLContextObj ctx = NULL;
+    if (CGLCreateContext(pix, NULL, &ctx) != kCGLNoError || !ctx) {
+        fprintf(stderr, "headless: could not create a GL context\n");
+        exit(1);
+    }
+    CGLSetCurrentContext(ctx);
+#else
+    Display *dpy = XOpenDisplay(NULL);
+    if (!dpy) {
+        fprintf(stderr, "headless: cannot open an X display "
+                        "(GL needs a surface; under Wayland, XWayland)\n");
+        exit(1);
+    }
+    int fbattr[] = { GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE, GLX_PBUFFER_BIT,
+                     GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
+                     GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 24, None };
+    int ncfg = 0;
+    GLXFBConfig *cfg = glXChooseFBConfig(dpy, DefaultScreen(dpy), fbattr, &ncfg);
+    if (!cfg || ncfg < 1) {
+        fprintf(stderr, "headless: no GLX framebuffer configuration\n");
+        exit(1);
+    }
+    typedef GLXContext (*create_ctx_fn)(Display *, GLXFBConfig, GLXContext, Bool, const int *);
+    create_ctx_fn create_ctx = (create_ctx_fn)glXGetProcAddressARB(
+        (const GLubyte *)"glXCreateContextAttribsARB");
+    if (!create_ctx) {
+        fprintf(stderr, "headless: GLX_ARB_create_context is missing\n");
+        exit(1);
+    }
+    int ctxattr[] = { GLX_CONTEXT_MAJOR_VERSION_ARB, 4, GLX_CONTEXT_MINOR_VERSION_ARB, 1,
+                      GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB, None };
+    GLXContext ctx = create_ctx(dpy, cfg[0], NULL, True, ctxattr);
+    if (!ctx) {
+        fprintf(stderr, "headless: could not create a GL 4.1 core context\n");
+        exit(1);
+    }
+    int pbattr[] = { GLX_PBUFFER_WIDTH, 16, GLX_PBUFFER_HEIGHT, 16, None };
+    GLXPbuffer pb = glXCreatePbuffer(dpy, cfg[0], pbattr);
+    if (!pb) {
+        fprintf(stderr, "headless: could not create a GLX pbuffer\n");
+        exit(1);
+    }
+    glXMakeContextCurrent(dpy, pb, pb, ctx);
+#endif
+}
+void headless_gfx_setup(void) {
+    gl_context_make();
+    sg_setup(&(sg_desc){
+        .environment = {
+            .defaults = { .color_format = SG_PIXELFORMAT_RGBA8,
+                          .depth_format = SG_PIXELFORMAT_DEPTH,
+                          .sample_count = 1 },
+        },
+        .logger = { .func = game_logger },
+        .buffer_pool_size = 4096,
+    });
+    fb_w = gfx_w * gfx_ssaa;
+    fb_h = gfx_h * gfx_ssaa;
+    targets_make(fb_w, fb_h, 1);
+}
+
+/* Read the final (TAA-accumulated) frame into `dst` (RGBA8, top-left origin).
+   One FBO and one glReadPixels, because the texture is ours in both modes; GL's
+   origin is the only difference from Metal, and every consumer wants top-left. */
+void headless_readback(unsigned char *dst) {
+    size_t row = (size_t)fb_w * 4u;
+    if (!gl_hist[hist_drawn]) { memset(dst, 0, row * (size_t)fb_h); return; }
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           gl_hist[hist_drawn], 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "readback: framebuffer incomplete\n");
+        exit(1);
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(0, 0, fb_w, fb_h, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    /* No row flip. Empirically the rendered texture already has framebuffer row
+       0 as the *top* row, because sokol flips the projection for its GL backend
+       so that one set of shaders serves both (Metal's origin is top-left). The
+       flip Metal's blit does not need, this does not need either -- and doing it
+       here produced an upside-down world, which is how this comment was earned. */
+}
+#endif  /* backend */
+
+static void targets_free(void) {
+    if (tgt_w == 0) return;
+    native_targets_free();
+    for (int i = 0; i < 2; i++) { sg_destroy_view(hist_view[i]); sg_destroy_view(hist_tex[i]);
+                                  sg_destroy_image(hist_img[i]); }
+    sg_destroy_view(hd_color_view); sg_destroy_view(k_color_tex);
+    sg_destroy_view(hd_lin_view); sg_destroy_view(k_lin_tex);
+    sg_destroy_view(hd_depth_view);
+    sg_destroy_image(hd_color_img); sg_destroy_image(hd_lin_img); sg_destroy_image(hd_depth_img);
+    tgt_w = tgt_h = 0;
+}
+
+void targets_ensure(int w, int h) {
+    if (w == tgt_w && h == tgt_h) return;
+    targets_free();
+    targets_make(w, h, headless);
+}
+
 
 /* Device and targets. Separate from init() because a rebuild has to drop them
    and make them again while the window keeps running. */
@@ -558,7 +764,12 @@ static void taa_pass(int rw, int rh, float jx, float jy, float wgt, float fx, fl
     tb.views[2] = k_lin_tex;
     tb.samplers[0] = lin_smp;
     tb.samplers[1] = lin_smp;
-    tb.samplers[2] = lin_smp;
+    /* Near-neighbour, because the shader declares a non-filtering sampler for
+       this one and because Apple's GL cannot filter a 32-bit float texture at
+       all: sampled with lin_smp there, the unit is "unloadable" and reads *zero*,
+       which silently disables reprojection. The value is this pixel's own linear
+       depth, so filtering buys nothing either way. */
+    tb.samplers[2] = near_smp;
 
     sg_begin_pass(&(sg_pass){ .action = { .colors[0] = { .load_action = SG_LOADACTION_DONTCARE } },
                               .attachments = { .colors[0] = hist_view[hist_cur] } });

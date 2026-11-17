@@ -2465,11 +2465,17 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                the facet's own normal it is one continuous sheet -- the plates
                were never in the reach, they were the level field. */
             float fx[3][2], fy[3], wx[3][2], wy[3];
+            /* Offset along the facet's own normal, not straight up: on a face
+               steeper than 45 degrees a vertical offset puts the sheet *inside*
+               the rock over half the facet, and the two surfaces then fight for
+               the same pixels -- visible as a dotted line down the fall. */
+            float sox = nrm[0] * 0.4f, soy = nrm[1] * 0.4f, soz = nrm[2] * 0.4f;
             for (int e = 0; e < 3; e++) {
                 int id = dt[k].v[e];
-                fx[e][0] = wx[e][0] = pts_x[id]; fx[e][1] = wx[e][1] = pts_z[id];
+                fx[e][0] = pts_x[id]; fx[e][1] = pts_z[id];
                 fy[e] = sample_height(pts_x[id], pts_z[id]);
-                wy[e] = fy[e] + 0.4f;
+                wx[e][0] = fx[e][0] + sox; wx[e][1] = fx[e][1] + soz;
+                wy[e] = fy[e] + soy;
             }
             emit_fan(3, fx, fy, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
             emit_fan(3, wx, wy, nrm, FOAM_COL, tri_flow[k][0], tri_flow[k][1], bcp, 2.0f);
