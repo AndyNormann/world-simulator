@@ -1265,6 +1265,125 @@ than a surprise.
   and the seams that hurt are geometry, not reprojection.
 - Geomorphing: see P4 -- measured as invisible while moving.
 
+## Round 3 — two sessions to "no visible artifacts"
+
+Round 2 ended with a renderer whose *gates* are trustworthy and whose *pixels* are
+not yet. The remaining defects are few, and none of them is a mystery: they are
+one shading rule, one reach rule, and two counters nobody has asked "is this even
+visible?".
+
+### What "no visible artifacts" has to mean (or it means nothing)
+
+1. **No facet's shading contradicts the ground under it.** Not "fewer dark
+   shards": the normal a facet is lit by may not point away from the ground it
+   covers. This is checkable per facet, so it is an invariant, not a screenshot.
+2. **No water surface has a hole, a wall, or a step between neighbours.** A reach
+   is one treatment end to end; foam does not alternate with bed.
+3. **Nothing appears or disappears while the camera moves.** Already 0 on `cull`,
+   `rebuild` and `flyarrive`; the rest of the temporal claim is that `walk`,
+   `pop` and `sprint` do not get worse.
+4. **The claim is swept, not sampled.** Twelve seeds over a scripted tour, not six
+   cameras someone picked.
+5. **It is measured on the platform you play on.** Until R4 runs on the laptop,
+   every statement above is about this Mac.
+
+### Session A — the facet does not lie (geometry and shading truth)
+
+**A0 (30 min, blocking) — the laptop gate.** `tools/goldens.sh`, then
+`tools/check.sh --slow`, then recalibrate `tools/flicker.sh` to that machine and
+write its numbers into AGENTS.md. Every later number in this round assumes this
+passed. If it fails, A0 owns the session and B moves.
+
+**A1 (1 h) — `tools/visible.sh`: measure each counter's visibility once.**
+Recolour one class at a time magenta (`V_TINY`, `V_SEAM`, `V_DARK`, `V_FALL`),
+render two cameras on two seeds, and report the pixel area each class actually
+covers. Output is one table: *of `tritiny`, `seamgap`, the dark chords and the
+fall switch, which are visible at all?* This is the cheapest half-day in the
+round and it decides what A2/A4 are allowed to spend time on — the alternative
+was another pass of chasing whichever counter had the biggest number.
+Accept: a pixel count per class, before any fix.
+
+**A2 (the session's bulk) — the dark chord gets the ground's normal.** Past
+`grounderr > 1.0`, a facet's plane is not the ground (measured in R1: 44–272 such
+facets per near-tier world), so it must not be lit as if it were. The rule: that
+facet takes the **heightfield's** normal at its centroid instead of its plane's,
+which is where the light actually lands. Cost: two extra height samples on a few
+hundred facets. New counter `darkfacets` = live facets whose shaded normal is
+more than 60° from the ground's normal under the centroid, which the rule makes
+**0 by construction** — the invariant in (1), not an alarm.
+
+- Mechanism lives where `nx_/ny_/nz_[k]` is filled; water facets are exempt (a
+  lake is flat by definition and its surface is not the bed).
+- Risk: every coarse-tier cliff chord changes brightness, and the LOD's ridges
+  could go flat. Fallback, measured not argued: blend plane and ground normal
+  50/50, or apply at step 1 only.
+- Accept: art-1's dark wedges gone at `--ssaa 2` by eye *and* `darkfacets == 0`
+  *and* the goldens re-recorded once with the reason in the commit.
+
+**A3 (20 min) — the vertex budget stops being a landmine.** `chunkverts` reads
+94–99%. Checked while planning: the GPU buffer is sized to `chunks[i].words`
+(actual use), so `MAX_CHUNK_VERTS` is only the static scratch array — 40000 → 48000
+costs **670 kB of static RAM, not another pool**. Accept: `chunkverts < 85%`,
+build within 5%, gate green.
+
+**A4 (1 h) — spend A1's answer on `tritiny` and `seamgap`.** If visible, fix the
+mechanism; if not, retire the counter's "must reach zero" promise with the number
+written down (`seamgap` 135 has been an apology for three rounds). This is the
+only honest way to close a counter.
+
+Session A is done when art-1, art-2 and art-5 read clean, `darkfacets == 0`,
+`chunkverts < 85` and `check.sh --slow` is green. Note what is *not* in that list:
+`grounderr` does not move, because A2 fixes how a chord is **lit**, not how it is
+**built** — R1 already proved the geometry cannot be repaired by inserting points,
+and setting a `grounderr` target here would repeat that mistake.
+
+### Session B — water is one surface, and the claim is swept
+
+**B1 (the session's bulk) — a fall is one reach.** Today a reach alternates
+between a tilted sheet and foam on the bed wherever a facet stands on end, which
+is the dashed stripe and the blob cluster at the foot of art-4. Measure first
+(dump the fall facets of one reach: slope, level, treatment), then snap: if the
+reach's mean slope is over 45°, the **whole reach** is bed foam; otherwise the
+whole reach is sheet. New counter `fallswitch` = fall facets whose neighbour in
+the same reach has a different treatment, which the rule makes **0**. Accept:
+`fallswitch == 0`, art-4 and art-6 read as one continuous band.
+
+**B2 (30 min) — `wetcoldry` 43–50 decided from data.** Dump five cases (chunk,
+corner heights, level, centroid) and let the dump choose between "the rule is
+wrong" and "the water polygon covers a dry corner". Target `< 20` or a written
+reason. Do not guess the rule.
+
+**B3 (1 h) — the classes with no counter.** Foam gaps at a fall's foot, the
+waterline at a river mouth. Add a counter only where the mechanism is provable
+(`fallgap`: consecutive fall facets with no surface between them); accept the
+rest explicitly as art in the docs. A counter nobody can define is worse than a
+picture.
+
+**B4 (the last hour) — `tools/tour.sh S`: the sweep.** Twelve seeds, one scripted
+tour each — pan, climb, dive at the coast, a fall, a lake, a river mouth — every
+frame printing its counters and every class asserted. This is how you actually
+found the artifacts (flying around), made cheap and repeatable, and it is the
+only thing in the round that can *contradict* the round. Temporal criterion rides
+along: `walk ≤ 3.9%`, `smax ≤ 24.3%`, `flyarrive == 0`, so "no visible artifacts"
+includes "nothing pops".
+
+Session B is done when `fallswitch == 0`, `fallgap == 0`, `wetcoldry < 20`, the
+tour is green over 12 seeds, the gate is green, and the plan carries a table of
+every known class with how it was closed: **invariant**, **counter**, or **art
+decision with a reason**.
+
+### Deliberately not planned, round 3
+
+- Everything round 2 declined stays declined (MSAA, alpha foliage, geomorphing,
+  motion vectors, a render graph, splitting water off the terrain mesh).
+- Unifying sea and lake: measured as under one level step, no visible seam.
+- Chasing `groundfar` (13.1): coarse-tier cliff chords again, and A2 makes them
+  *look* right without making them geometrically honest.
+- A perf pass: `p50` is 5.7 ms at 800×450 ssaa 2 on this Mac and nothing in this
+  round is aimed at it; the laptop's numbers decide whether it needs a session.
+- Finding artifacts we have not seen. The tour makes that cheaper; it cannot
+  promise a class nobody has flown over.
+
 ## Rules that must not be broken by accident
 
 1. Anything indexed by world cell is a bug (see #4).
