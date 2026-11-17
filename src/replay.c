@@ -59,6 +59,13 @@ float key_state(const char *field) {
     if (!strcmp(field, "nonfinite")) return (float)world_nonfinite;
     if (!strcmp(field, "trioverflow")) return (float)tri_overflow;
     if (!strcmp(field, "ptoverflow")) return (float)pt_overflow;
+    /* structural counts, worst chunk: a long facet, a sliver, a point nobody
+       used, a seabed colour on dry ground, a seam chord off the ground */
+    if (!strcmp(field, "edgelong")) return (float)c_edge_long;
+    if (!strcmp(field, "tritiny")) return (float)c_tri_tiny;
+    if (!strcmp(field, "unusedpts")) return (float)c_unused_pts;
+    if (!strcmp(field, "wetcoldry")) return (float)c_wet_col_dry;
+    if (!strcmp(field, "seamgap")) return (float)c_seam_gap;
     /* the whole heightfield, so a seed sweep can catch a world that generated
        flat, empty or nonsensical without rendering anything */
     if (!strcmp(field, "height_min") || !strcmp(field, "height_max")) {

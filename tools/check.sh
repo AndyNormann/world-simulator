@@ -35,6 +35,10 @@ if [ $quick -eq 0 ]; then
     ./build/game replay replays/trees.txt    --seed 7 --size 960x540 --trees-only >/dev/null
     ./build/game replay replays/streaming.txt --seed 7 --size 960x540 >/dev/null
     ./build/game replay replays/golden.txt   --seed 7 --size 1280x720 >/dev/null
+    # the reported artifact cameras, for their structural counters: long facets,
+    # slivers, unused points, a seabed colour on dry ground, a seam chord off the
+    # ground. P1..P4 of PLAN.md drive these down; today they are the "before"
+    ./build/game replay replays/artifacts.txt --seed 1 --world alpine --size 960x540 >/dev/null
     # M2: the town is geometry with walls in it, so it is walked, not just drawn
     ./build/game dump replays/town.txt --seed 12 --settlement 3 >/dev/null
     for n in dusk high low; do

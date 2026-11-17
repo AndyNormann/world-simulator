@@ -42,6 +42,16 @@
 # streaming failing loudly (a hole, a flash): seed 40's auto camera hits a coast
 # and reads smax 42%, so this is an alarm at 55%, not a quality score.
 #
+# `pop` is the same 0.6-unit step as `walk` but with the temporal history
+# cleared before every frame: every other column measures a *converged*
+# accumulator, which is what the player sees but also what averages a one-frame
+# change over ten. This is the un-smoothed figure, and it is the one an "it
+# popped" report is about. `fly` is the flying analogue of `walk` -- a 8 degree
+# pan, a 5 degree look-up and a 29-unit climb, 26 frames each at ~2 px/frame --
+# because a number only ever measured while walking cannot say whether flying is
+# steady; a chunk arriving mid-flight adds its own area to it. Both are
+# regression alarms at 20% / 45%, not quality scores: a pan moves every pixel.
+#
 # frame_ms is the cost side, which no pixel diff can see: p50/p99/max of every
 # rendered frame during the probe, including the streaming bursts. A renderer
 # that is stable and correct but stalls for 200 ms has failed the player just as
@@ -69,14 +79,18 @@ for s in "$@"; do
         cull=$(echo "$line"    | sed -n 's/.* cull=\([0-9.]*\)%.*/\1/p')
         lod=$(echo "$line"     | sed -n 's/.* lod=\([0-9.]*\)%.*/\1/p')
         lodmax=$(echo "$line"  | sed -n 's/.* lodmax=\([0-9]*\).*/\1/p')
+        pop=$(echo "$line"     | sed -n 's/.* pop=\([0-9.]*\)%.*/\1/p')
+        pmax=$(echo "$line"    | sed -n 's/.* pmax=\([0-9.]*\)%.*/\1/p')
+        fly=$(echo "$line"     | sed -n 's/.* fly=\([0-9.]*\)%.*/\1/p')
         sprint=$(echo "$line"  | sed -n 's/.* sprint=\([0-9.]*\)%.*/\1/p')
         smax=$(echo "$line"    | sed -n 's/.* smax=\([0-9.]*\)%.*/\1/p')
         p99=$(echo "$line"     | sed -n 's/.* p99=\([0-9.]*\).*/\1/p')
         fmax=$(echo "$line"    | sed -n 's/.* max=\([0-9.]*\).*/\1/p')
         awk -v a="$static" -v b="$walk" -v c="$rebuild" -v d="$cull" \
             -v e="$lod" -v f="$lodmax" -v g="$p99" -v h="$fmax" -v i="$smax" \
-            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210 || g > 40.0 || h > 120.0 || i > 55.0) exit 1 }' || {
-            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax sprint=$sprint% smax=$smax% p99=${p99}ms max=${fmax}ms)"
+            -v j="$pop" -v k="$pmax" -v l="$fly" \
+            'BEGIN{ if (a > 0.5 || b > 8.0 || c > 8.0 || d > 0.0 || e > 12.0 || f > 210 || g > 40.0 || h > 120.0 || i > 55.0 || j > 12.0 || k > 20.0 || l > 45.0) exit 1 }' || {
+            echo "flicker: seed $s ($name) regressed (static=$static% walk=$walk% rebuild=$rebuild% cull=$cull% lod=$lod% lodmax=$lodmax sprint=$sprint% smax=$smax% pop=$pop% pmax=$pmax% fly=$fly% p99=${p99}ms max=${fmax}ms)"
             fail=1
         }
     done

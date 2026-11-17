@@ -967,12 +967,12 @@ void flicker_probe(void) {
     float res[4];
     for (int i = 0; i < 4; i++) {
         yaw = yaw0; pitch = pitch0; cam_y = cy0;
-        settle(48);
+        settle(32);
         memcpy(base, cap_buf, bytes);
         yaw = yaw0 + cases[i].dyaw;
         pitch = pitch0 + cases[i].dpitch;
         cam_y = cy0 + cases[i].dcam;
-        settle(48);
+        settle(32);
         memcpy(alt, cap_buf, bytes);
         res[i] = flicker_pct(base, alt, 0);
     }
@@ -981,10 +981,10 @@ void flicker_probe(void) {
        the "terrain disappears when it reaches the edge" report, which no
        frame-to-frame metric can see because the hole holds still. */
     yaw = yaw0; pitch = pitch0; cam_y = cy0; cam_x = cx0; cam_z = cz0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     gfx_nocull = 1;
-    settle(48);
+    settle(32);
     memcpy(alt, cap_buf, bytes);
     gfx_nocull = 0;
     float cull = flicker_pct(base, alt, 0);
@@ -998,7 +998,7 @@ void flicker_probe(void) {
        light?" pass by accident of sampling rather than by design. Rebuild, then
        measure the area and the worst pixel. */
     yaw = yaw0; pitch = pitch0; cam_y = cy0; cam_x = cx0; cam_z = cz0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     lod_clamp = 1;
     force_rebuild_all();
@@ -1012,7 +1012,7 @@ void flicker_probe(void) {
             }
         } while (!world_ready());
     }
-    settle(48);
+    settle(32);
     memcpy(alt, cap_buf, bytes);
     lod_clamp = 0;
     float lod_lvl = flicker_pct(base, alt, 0);
@@ -1023,7 +1023,7 @@ void flicker_probe(void) {
             if (v < 0) v = -v;
             if (v > lod_max) lod_max = v;
         }
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     float walk = 0.0f, walk_max = 0.0f, walk_up = 0.0f;
     const char *dump = getenv("FLICKER_DUMP");
@@ -1052,7 +1052,7 @@ void flicker_probe(void) {
        leans on reprojection depth, vertical motion barely does. Comparing the
        two is how a reprojection fault is told apart from plain aliasing. */
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     for (int i = 0; i < 30; i++) {
         cam_y += 0.6f;
@@ -1068,7 +1068,7 @@ void flicker_probe(void) {
        "forward at a fixed height" and is the only version that can show what a
        player sees. */
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     float walk_player = 0.0f;
     keys[SAPP_KEYCODE_W] = 1;
@@ -1085,7 +1085,7 @@ void flicker_probe(void) {
        LOD band boundary (the hysteresis dead band is 60-240). This is the only
        measurement here that can see a tier swap from the player's seat. */
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     float sprint = 0.0f, sprint_max = 0.0f;
     keys[SAPP_KEYCODE_W] = 1;
@@ -1102,12 +1102,72 @@ void flicker_probe(void) {
     keys[SAPP_KEYCODE_LEFT_SHIFT] = 0;
     sprint /= 90.0f;
 
+    /* Pop: the same 0.6-unit step as `walk`, but with the temporal history
+       cleared before every frame. Every other column measures a *converged*
+       accumulator, which is what the player sees -- but the blend is also the
+       thing that hides a change, because it averages a one-frame change over
+       ten. This is the un-smoothed answer, and it is the number an "it popped
+       when I flew past" report is actually about. */
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    prev_vp_valid = 0.0f; taa_phase = 0;
+    grab();
+    memcpy(base, cap_buf, bytes);
+    float pop = 0.0f, pop_max = 0.0f;
+    for (int i = 0; i < 10; i++) {
+        cam_x += sinf(yaw) * 0.6f;
+        cam_z += cosf(yaw) * 0.6f;
+        prev_vp_valid = 0.0f; taa_phase = 0;      /* no history, no hiding */
+        grab();
+        float d = flicker_pct(base, cap_buf, 0);
+        pop += d;
+        if (d > pop_max) pop_max = d;
+        memcpy(base, cap_buf, bytes);
+    }
+    pop /= 10.0f;
+
+    /* Fly: the motions a walking player never makes, which are the ones the
+       "strange pop when flying around" reports are made of -- a yaw sweep, a
+       pitch sweep and a climb, 30 frames each at about 2 px per frame, so the
+       temporal filter can follow. `sprint` covers the forward leg.
+       It reads much higher than `walk` and that is honest: a pan moves every
+       pixel, so this is the flying analogue of `walk`, not a pop detector. It
+       is here because a number that is only ever measured while walking cannot
+       say whether flying is steady, and because a chunk arriving mid-flight
+       pushes its own area into this figure -- which is how streaming punching
+       a hole would be caught. */
+    cam_x = cx0; cam_z = cz0; cam_y = cy0;
+    settle(32);
+    memcpy(base, cap_buf, bytes);
+    float fly = 0.0f, fly_sum = 0.0f;
+    int fn = 0;
+    for (int leg = 0; leg < 3; leg++) {
+        for (int i = 0; i < 26; i++) {
+            if (leg == 0) yaw = yaw0 + 0.005f * (float)i;          /* 8 degree pan */
+            else if (leg == 1) pitch = pitch0 + 0.003f * (float)i; /* look up 5 deg */
+            else cam_y = cy0 + 1.0f * (float)i;                   /* 29 units up */
+            grab();
+            float d = flicker_pct(base, cap_buf, 0);
+            /* the first frames of a leg start from the previous leg's history,
+               so they ramp up: that is the filter catching up, not the world */
+            if (i >= 6) {
+                if (d > fly) fly = d;
+                fly_sum += d;
+                fn++;
+            }
+            memcpy(base, cap_buf, bytes);
+        }
+    }
+    if (fn) fly_sum /= (float)fn;
+    fly = fly > fly_sum ? fly : fly_sum;   /* one number: the worst frame */
+    yaw = yaw0; pitch = pitch0; cam_y = cy0;
+    cam_x = cx0; cam_z = cz0;
+
     /* Streaming: rebuild every chunk and watch for a flash. Walking forward is
        the motion that triggers tier rebuilds -- going up does not change the
        horizontal distance the streamer keys on -- which is why this, and not
        the walk, is the number that says whether streaming is visible. */
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     /* Measured *after* the rebuild settles, not during it. The frames in
        flight while 2500 chunks stream are a race against how fast this machine
@@ -1128,7 +1188,7 @@ void flicker_probe(void) {
             }
         } while (!world_ready());
     }
-    settle(48);
+    settle(32);
     rebuild_max = flicker_pct(base, cap_buf, 0);
     cam_x = cx0; cam_z = cz0; cam_y = cy0;
     cam_x = cx0; cam_z = cz0; cam_y = cy0;      /* the walk moved the camera: put it back, or
@@ -1136,15 +1196,17 @@ void flicker_probe(void) {
                                       from somewhere else */
 
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
-    settle(48);
+    settle(32);
     memcpy(alt, cap_buf, bytes);
     yaw = yaw0; pitch = pitch0; cam_y = cy0;
-    settle(48);
+    settle(32);
     memcpy(base, cap_buf, bytes);
     float f50, f99, fmax;
     frame_time_stats(&f50, &f99, &fmax);
-    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f sprint=%.2f%% smax=%.2f%% static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
-           terrain_seed, gfx_w, gfx_h, gfx_ssaa, f50, f99, fmax, sprint, sprint_max, res[0], res[1], res[2], res[3], walk, walk_max, walk_up, walk_player, rebuild_max,
+    printf("flicker seed=%u size=%dx%d ssaa=%d frame_ms p50=%.1f p99=%.1f max=%.1f sprint=%.2f%% smax=%.2f%% pop=%.2f%% pmax=%.2f%% fly=%.2f%% static=%.2f%% yaw=%.2f%% pitch=%.2f%% rise=%.2f%% walk=%.2f%% wmax=%.2f%% up=%.2f%% player=%.2f%% rebuild=%.2f%% cull=%.2f%% top=%.2f%% lod=%.2f%% lodmax=%d\n",
+           terrain_seed, gfx_w, gfx_h, gfx_ssaa, f50, f99, fmax, sprint, sprint_max,
+           pop, pop_max, fly, res[0], res[1], res[2], res[3], walk, walk_max,
+           walk_up, walk_player, rebuild_max,
            cull, flicker_pct(base, alt, 1), lod_lvl, lod_max);
     fflush(stdout);
     free(base); free(alt);
@@ -1220,6 +1282,10 @@ static void capture_current(const char *path) {
            peak_x, peak_y, peak_z);
     printf("chunks: %d of %d ready, %d drawn\n", nchunks_ready(), NCHUNKS, chunks_drawn);
     printf("mesh: %d points, %d triangles, %d facets\n", mesh_pts, mesh_tris, mesh_facets);
+    /* the worst chunk, not a total: these describe the fill, and a total would
+       describe the camera instead */
+    printf("structure: edgelong=%d tritiny=%d unusedpts=%d wetcoldry=%d seamgap=%d\n",
+           c_edge_long, c_tri_tiny, c_unused_pts, c_wet_col_dry, c_seam_gap);
     if (seg_n > 0)
         printf("rivers=%d  segments=%d  level %.1f..%.1f\n", river_count, seg_n, river_hi, river_lo);
     else

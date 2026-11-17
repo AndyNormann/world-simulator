@@ -1,0 +1,60 @@
+# The reported artifact cameras, one per geometry fault the player has found.
+# Their job is not the image -- it is the counters printed with it: a facet
+# nobody designed (`edgelong`, `tritiny`), a point nobody used (`unusedpts`), a
+# seabed colour on a facet that has a dry corner (`wetcoldry`), a seam chord
+# standing off the ground (`seamgap`). Each must reach zero as PLAN.md's
+# P1..P4 land; today they are alarms set at the measured worst.
+#
+#   ./build/game replay replays/artifacts.txt --seed 1 --world alpine --size 1280x720
+#
+# The images land in build/shots/art-*.png next to their .small.png, so a fix
+# can be looked at as well as counted.
+
+wait 0.5
+assert nonfinite == 0
+assert overflow == 0
+assert trioverflow == 0
+assert ptoverflow == 0
+
+# 1. the coastal monolith: a dark navy shelf at its foot (terrain, not water)
+cam -3028.6,235.0,-3592.7
+look 74.66 -16.37
+time 10.41
+shot build/shots/art-1-shelf.png
+
+# 2. a thin terrain tongue painted with the deep-bed colour
+cam -4747.5,55.4,310.9
+look -7.43 -0.36
+time 11.91
+shot build/shots/art-2-tongue.png
+
+# 3. the island that "turns to water" up close
+cam -3688.3,314.7,-3376.2
+look -609.73 -7.73
+time 13.74
+shot build/shots/art-3-island.png
+
+# 4. the waterfall that ends in a dark wedge
+cam -6267.2,661.6,-2415.1
+look -609.87 -7.59
+time 13.44
+shot build/shots/art-4-fall.png
+
+# 5. the lake seen from above: the shore, the settle, the waterline
+cam -7149.1,511.6,-113.6
+look 60.31 -35.48
+time 9.77
+shot build/shots/art-5-lake.png
+
+# 6. a river valley: the channel, the foam, the banks
+cam -3618.6,500.2,-4454.3
+look 203.84 -28.32
+time 12.0
+shot build/shots/art-6-river.png
+
+# structural health after 6 views (which stream in every tier at least once)
+assert edgelong <= 300
+assert tritiny <= 500
+assert unusedpts <= 30
+assert wetcoldry <= 150
+assert seamgap <= 500

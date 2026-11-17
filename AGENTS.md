@@ -23,9 +23,9 @@ Adding a file means adding it to `OBJS` in the `Makefile` and to
 tools/worlds.sh 1 40        # 40 worlds: maps + stats + one contact sheet
 tools/worlds.sh 1 40 512    # same, 512px maps (~20s)
 
-tools/check.sh         # definition of done: build + tests + replays + goldens (~7s)
+tools/check.sh         # definition of done: build + tests + replays + goldens + artifacts (~30s)
 tools/check.sh --quick # build + unit tests + smoke replay (~3s)
-tools/check.sh --slow  # + clang static analyzer + 40-seed sweep (~70s)
+tools/check.sh --slow  # + analyzer + 40-seed sweep + flicker probe (~2min)
 tools/render.sh shot --seed 7 --cam 0,180,0 --yaw 45 --time 17.5 -o build/shots/a.png
 tools/render.sh replay replays/smoke.txt
 ./build/game shot --seed 12 --settlement 3 -o build/shots/town.png  # M2: a town
@@ -248,7 +248,9 @@ assert FIELD OP VALUE        OP: > < >= <= == !=
 ```
 
 Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees rivers shadowed_pct
-tris chunks_drawn height_min height_max`. `tris` and `chunks_drawn` need rendering, so they are skipped in
+tris chunks_drawn height_min height_max`, plus the structural counters
+`overflow nonfinite trioverflow ptoverflow edgelong tritiny unusedpts
+wetcoldry seamgap`. `tris` and `chunks_drawn` need rendering, so they are skipped in
 `dump` mode. `#` starts a comment.
 
 A failing assert prints `file:line: field is X, expected OP Y (t=Zs)` and exits 1.
@@ -424,3 +426,17 @@ alone can silently produce a header that does not match the headers.
 - **`tools/flicker.sh 1 12 40`** is the gate, and it checks a *high* camera as
   well as the ground. Pixel counts are contrast-weighted: sharper scores worse.
   Treat it as a regression alarm.
+- **Every artifact class needs a counter, not a screenshot.** A facet that is
+  longer than six cells (`edgelong`), a sliver (`tritiny`), a point no live facet
+  uses (`unusedpts`), a facet painted with the seabed while it has a dry corner
+  (`wetcoldry`), a border-chain chord standing more than a unit off the ground
+  (`seamgap`) -- each is the *mechanism* of a fault the player has reported, and
+  each is reported as the worst single chunk, so the number describes the fill
+  rather than how many chunks the camera happened to stream in.
+  `replays/artifacts.txt` renders the reported cameras and asserts them.
+- **`pop` and `fly` exist because every other flicker column measures a converged
+  accumulator.** TAA averages a one-frame change over ten, so `walk` cannot see
+  the thing an "it popped" report is about: `pop` clears the history before every
+  frame, and `fly` runs a slow pan, look-up and climb (~2 px per frame, so the
+  filter follows) because a number only measured while walking cannot say whether
+  flying is steady.

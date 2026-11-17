@@ -306,6 +306,15 @@ GV(int mesh_pts,0)
 GV(int mesh_overflow,0)
 GV(int tri_overflow,0)   /* triangles dropped by MAX_DT */
 GV(int pt_overflow,0)    /* points dropped by MAX_PTS */
+/* Structural counts, each reported as the *worst single chunk* built. A count
+   per process would depend on how many chunks streamed in, which is camera
+   dependent; the worst chunk is a property of the fill, which is what these
+   are for. See the P0..P4 phases in PLAN.md. */
+GV(int c_edge_long,0)     /* edges longer than 2x the tier's spacing */
+GV(int c_tri_tiny,0)      /* facets under 4 units^2 */
+GV(int c_unused_pts,0)    /* points in the set that no live facet uses */
+GV(int c_wet_col_dry,0)   /* seabed-coloured facet that has a dry corner */
+GV(int c_seam_gap,0)      /* border-chain edges off the ground by >1 unit */
 GV(int world_nonfinite,0)
 GV(int mesh_tris,0)
 GV(int mesh_facets,0)

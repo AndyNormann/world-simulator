@@ -621,17 +621,18 @@ gradient even though it is now sampled per fragment.
 | `static` | 0.00% | 0.00% |
 | `yaw` / `pitch` (ground camera) | 0.77 / 1.20% | <= 0.5 / 0.5% |
 | `walk` ground / high | 2.74 / 0.98% | <= 2.0 / 1.0% |
-| `pop`: single frame, TAA history reset | not measured | 0.00% standing still |
-| `fly`: worst frame over a scripted flight | not measured | <= 5%, and only where geometry enters the frame |
-| `seam`: lod 1 vs 2 vs 4, band around chunk borders | 8.4% full frame | <= 1% of the band |
+| `pop`: single frame, TAA history reset | 5.7 / 3.5% | <= 2% |
+| `fly`: worst frame of a pan / look-up / climb | 19.8 / 26.9% | <= 8% |
+| `edgelong` / `tritiny` (worst chunk) | 266 / 441 | 0 |
+| `unusedpts` / `wetcoldry` / `seamgap` | 18 / 105 / 453 | 0 |
 | `frame_ms` p99 | 10.5 ms | <= 16.6 ms (60 Hz) |
 | counters `overflow` `trioverflow` `ptoverflow` `nonfinite` | 0, asserted | 0, asserted |
 | new: `edge_long` `tri_tiny` `unused_pts` `wet_col_dry` `seam_step` | not measured | 0, asserted |
 
-### P0 — the gates for all three (1 session)
+### P0 — the gates for all three — **done**
 
-Nothing below is verifiable without this, and the last five fixes in this file
-were found with eyes rather than tests.
+Nothing below was verifiable without this, and the five fixes before it were
+found with eyes rather than tests.
 
 - `replays/artifacts.txt`: the seven reported cameras plus the lake camera, the
   river camera and the waterfall camera, each rendering into `build/shots/` with
@@ -649,8 +650,46 @@ were found with eyes rather than tests.
   `replays/smoke.txt` asserts them zero. `edge_long` alone would have caught the
   Delaunay overflow and the border slivers a week earlier.
 
-Gate: `tools/check.sh --slow` green with the new columns and counters, and the
-new artifact goldens recorded *from the current build* (they are the "before").
+Two of the planned items were replaced by cheaper machinery with the same
+information, which is the point of writing the plan down before the code:
+
+- the **pixel seam band** became the `seamgap` counter. Rendering three tiers and
+  masking a band around chunk borders needs a depth readback and a screen-space
+  border mask; counting the border-chain edges whose chord stands more than a
+  unit off the ground measures the same mechanism (this chunk's boundary is not
+  where its neighbour draws the ground) in fifteen lines, in worldgen, with no
+  GPU. If the counter and the screen ever disagree, the band diff can come back.
+- `fly` was first built as "worst frame minus the median", to separate a pop from
+  steady motion. Measured, it was mostly filter warm-up and leg-to-leg noise
+  (7.7% at a camera where nothing was arriving), so it is now the plain worst
+  frame of the three legs -- a flying analogue of `walk` with an alarm at 45%.
+
+What landed: `edgelong` `tritiny` `unusedpts` `wetcoldry` `seamgap` (worst single
+chunk, printed in the `structure:` line and assertable in a replay), the `pop`,
+`pmax` and `fly` columns, `replays/artifacts.txt` with the six reported cameras,
+and `tools/check.sh` running that replay every time. The flicker probe also
+settles 32 frames instead of 48 (TAA needs 16 to converge) to pay for the new
+columns.
+
+First measurements, seed 1 at 800x450 ssaa 2, ground / high camera:
+
+| column | before P0 | now |
+|---|---|---|
+| `static` | 0.00 | 0.00 |
+| `yaw` / `pitch` | 4.88 / 5.71 | unchanged (no geometry change) |
+| `walk` / `wmax` | 6.64 / 10.06 | unchanged |
+| `pop` / `pmax` | not measured | 5.72 / 7.94 (ground), 3.45 / 3.54 (high) |
+| `fly` | not measured | 19.82 (ground), 26.88 (high) |
+
+The ground camera's `pitch` of 5.71% is much worse than the 1.20% recorded
+after the bed-sink commit, and nothing regressed: the 73d5afe shoreline moved the
+auto-framed ground camera to a different place. That is why the columns are
+alarms and why every phase below must be measured at a *named* camera.
+
+Nothing arriving during a flight was measured, by the way: `chunks_drawn`,
+`ready` and `jobs_pending()` were identical frame to frame, so the 19-27% is the
+pan moving every pixel, not streaming. If a chunk ever does arrive mid-flight it
+adds its own area to `fly`, which is what the column is for.
 
 ### P1 — colour from the facet, not from one point (1 session)
 

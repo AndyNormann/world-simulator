@@ -2080,6 +2080,58 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     }
     if (ntri < 8) return 0;
 
+    /* --- structural counts -------------------------------------------------
+       The fill is a Delaunay of a jittered point set, so it can produce a facet
+       nobody designed: the border ring is exactly collinear and the interior's
+       spacing rule keeps its points a facet-width away from it, so the bridge
+       is 100-150 units long. A long facet is the mechanism behind a colour
+       taken 100 units from its corners and behind a water chord standing over
+       a lake, so it is counted here instead of being hunted in a screenshot.
+       Each is kept as the worst single chunk: a per-process total would depend
+       on how many chunks happened to stream in, i.e. on the camera. */
+    {
+        static unsigned char used[MAX_PTS + 3];
+        memset(used, 0, (size_t)npts);
+        int edge_long = 0, tri_tiny = 0, unused = 0, seam_gap = 0;
+        /* Six cells, not two: a step-4 chunk's own points are four cells apart
+           (plus jitter), so a threshold relative to the tier counts the
+           sampling rule rather than the fill's gaps. Past six cells the edge
+           is the triangulation bridging the empty band beside the border ring. */
+        const float elim = 6.0f * CELL;
+        for (int k = 0; k < ndt; k++) {
+            if (!dt[k].alive) continue;
+            const int v[3] = { dt[k].v[0], dt[k].v[1], dt[k].v[2] };
+            for (int e = 0; e < 3; e++) {
+                int pa = v[e], pb = v[(e + 1) % 3];
+                used[pa] = 1;
+                float dx = pts_x[pb] - pts_x[pa], dz = pts_z[pb] - pts_z[pa];
+                float l = sqrtf(dx*dx + dz*dz);
+                if (l > elim) edge_long++;
+                /* A chain edge longer than one cell only exists at a coarse
+                   tier, and it is shared with the neighbour's *finer* chain:
+                   the deviation between this chord and the ground is the step
+                   the neighbour draws one facet away. That is the seam. */
+                if (l > 1.5f * CELL && pt_edge[pa] && pt_edge[pb]) {
+                    float dev = sample_height((pts_x[pa] + pts_x[pb]) * 0.5f,
+                                              (pts_z[pa] + pts_z[pb]) * 0.5f)
+                              - 0.5f * (sample_height(pts_x[pa], pts_z[pa])
+                                      + sample_height(pts_x[pb], pts_z[pb]));
+                    if (dev < 0.0f) dev = -dev;
+                    if (dev > 1.0f) seam_gap++;
+                }
+            }
+            float ax = pts_x[v[0]], az = pts_z[v[0]];
+            float ar = 0.5f * fabsf((pts_x[v[1]] - ax) * (pts_z[v[2]] - az)
+                                  - (pts_z[v[1]] - az) * (pts_x[v[2]] - ax));
+            if (ar < 4.0f) tri_tiny++;
+        }
+        for (int p = 0; p < npts; p++) if (!used[p]) unused++;
+        if (edge_long > c_edge_long) c_edge_long = edge_long;
+        if (tri_tiny  > c_tri_tiny)  c_tri_tiny  = tri_tiny;
+        if (unused    > c_unused_pts) c_unused_pts = unused;
+        if (seam_gap  > c_seam_gap)  c_seam_gap  = seam_gap;
+    }
+
     /* One river query per vertex, not per facet: the water paint wants the
        minimum over a facet's three corners, and doing that inline cost four
        queries per triangle and made chunk builds slow enough to see. */
@@ -2091,13 +2143,15 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
 
     /* --- one colour per facet ------------------------------------------- */
     float top = -1e9f, bot = 1e9f;
+    int wet_col_dry = 0;
     for (int k = 0; k < ndt; k++) {
         if (!dt[k].alive) continue;
         float cxw = (pts_x[dt[k].v[0]] + pts_x[dt[k].v[1]] + pts_x[dt[k].v[2]]) / 3.0f;
         float czw = (pts_z[dt[k].v[0]] + pts_z[dt[k].v[1]] + pts_z[dt[k].v[2]]) / 3.0f;
-        float cyw = (sample_height(pts_x[dt[k].v[0]], pts_z[dt[k].v[0]])
-                   + sample_height(pts_x[dt[k].v[1]], pts_z[dt[k].v[1]])
-                   + sample_height(pts_x[dt[k].v[2]], pts_z[dt[k].v[2]])) / 3.0f;
+        float ch[3];
+        for (int q = 0; q < 3; q++)
+            ch[q] = sample_height(pts_x[dt[k].v[q]], pts_z[dt[k].v[q]]);
+        float cyw = (ch[0] + ch[1] + ch[2]) / 3.0f;
         if (cyw > top) top = cyw;
         if (cyw < bot) bot = cyw;
 
@@ -2115,6 +2169,15 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             #define SAMP(arr) ((arr[i00]*(1-fx)+arr[i10]*fx)*(1-fz) + (arr[i01]*(1-fx)+arr[i11]*fx)*fz)
             r = SAMP(cr); g = SAMP(cg); b = SAMP(cb);
             #undef SAMP
+        }
+        /* The colour is one sample and the geometry is three: a facet spanning
+           the shore is painted with the cell under its centre, which can be the
+           seabed while a corner stands on the beach -- the navy plate lying on
+           an island. Counted here (P0), fixed by sampling the facet (P1). */
+        if (sample_height(cxw, czw) <= 0.0f) {
+            float cmax = ch[0] > ch[1] ? ch[0] : ch[1];
+            if (ch[2] > cmax) cmax = ch[2];
+            if (cmax > 0.5f) wet_col_dry++;
         }
 
         float steep = 1.0f - ny_[k];
@@ -2226,6 +2289,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         tri_col[k][0] = r; tri_col[k][1] = g; tri_col[k][2] = b;
         tri_flow[k][0] = fx2; tri_flow[k][1] = fz2;
     }
+    if (wet_col_dry > c_wet_col_dry) c_wet_col_dry = wet_col_dry;
     chunks[ci].cy_top = (int)top;
     chunks[ci].cy_bot = (int)bot;
 
@@ -2686,6 +2750,7 @@ void start_streamer(unsigned seed) {
     builder_quit = 0;
     mesh_pts = mesh_tris = mesh_facets = 0;
     mesh_overflow = 0; tri_overflow = 0; pt_overflow = 0;
+    c_edge_long = c_tri_tiny = c_unused_pts = c_wet_col_dry = c_seam_gap = 0;
     builder_t0 = stm_now();
     builder_live = 1;
     builder_started = 1;
