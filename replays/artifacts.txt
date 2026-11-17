@@ -65,5 +65,9 @@ assert grounderr <= 12
 assert groundfar <= 16
 # pool exhaustion and stripped uniforms are warnings: they must never appear
 assert warned == 0
-assert chunkverts < 100
+assert chunkverts < 88
 assert unusedpts <= 6
+# facets re-lit by the ground's normal instead of their own plane: the
+# prevalence of the dark-chord mechanism, not a defect count. It is 49-59 here;
+# a jump means the fill is producing chords faster than the fill fixes them.
+assert relit <= 90

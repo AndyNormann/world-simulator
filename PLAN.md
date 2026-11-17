@@ -1372,6 +1372,68 @@ tour is green over 12 seeds, the gate is green, and the plan carries a table of
 every known class with how it was closed: **invariant**, **counter**, or **art
 decision with a reason**.
 
+### Session A, as it went — the numbers
+
+**A1 (`tools/visible.sh`) paid for itself before any fix was written.** Painting
+one class magenta and counting pixels that survive shading, TAA and fog, on two
+seeds and five cameras:
+
+| class | share of the frame | verdict |
+|---|---|---|
+| `dark` (chords) | 0.2% – 24.6% | the artifact, by far |
+| `seam` | 0.3% – 1.8% | visible, but see below |
+| `tiny` (slivers) | 0.1% – 1.5% | visible as needles, not as bands |
+| `fall` | 0.0% – 0.7% | visible where a fall is in view |
+
+The guess in the plan was that at least one of these would be invisible and could
+be retired on the spot. None was; all four earn their counters.
+
+**A2 — the chord is lit by the ground.** Any facet normal more than 60° from the
+heightfield's normal at its centroid, measured at the tier's own spacing, is
+replaced by that normal. `relit` reports how many facets needed it (49–59 on the
+artifact cameras, 86 on a cliff face). Measured on the shelf camera: the dark
+wedges on the meadow at the monolith's foot are gone, for 0.46% of pixels changed
+by more than 8 — the fix touches exactly the pixels it is about.
+
+Two variants were measured and **rejected**, which is the part worth keeping:
+
+- *Re-light every facet with `grounderr > 1`* (the plan's original trigger). It
+  changed **26%** of a cliff frame, because most high-`grounderr` facets have a
+  plane normal that already agrees with the ground; `grounderr` is a proxy for
+  "the plane lies", not for "the lighting lies". The dot product is the thing
+  itself.
+- *Re-light hairline slivers too*, so the invariant had no exceptions. It put a
+  **dark line down a sunlit cliff**: a sliver on a cliff *edge* takes the edge's
+  normal, which faces away from the sun. Slivers stay pointed up, and the
+  invariant is stated with that one documented exception.
+
+**A3 — the vertex cap was the landmine the plan said it was.** `MAX_CHUNK_VERTS`
+40000 → 48000, after confirming the GPU buffer is created at the size a chunk
+actually used (`render.c` sizes it from `chunks[i].words`), so this is 670 kB of
+static scratch and no pool at all. `chunkverts` **94–99% → 82–85%**, build
+unchanged. The `artifacts` replay gates it at 88.
+
+**A4 — `tritiny` and `seamgap` stay, with their visibility numbers written down.**
+`tiny` covers 0.1–1.5% of a frame as tapered needles; the one shading change that
+would have flattened them is A2's rejected sliver variant. `seam` covers 0.3–1.8%
+and is the LOD seam class: the geometric gap is closed by the tier-2+ skirts,
+`cull` is 0.00 and the goldens are 0.000%, so what remains is a chord whose own
+normal A2 now corrects when it disagrees with the ground. Neither is closed by a
+code change; both are closed by *measuring how much of the screen they occupy*,
+which is what A1 exists for.
+
+Goldens were re-recorded once, deliberately: dusk 0.028%, high 0.230%, low 0.284%
+mean difference. Note that the gate would have *passed* without re-recording —
+that is an argument for re-recording, not against it, because a 0.28% drift that
+nobody claims would otherwise sit inside the tolerance forever.
+
+### Session A status
+
+Closed: the dark-chord class (invariant), the vertex-cap landmine (gate), the
+four counters' visibility (numbers). Open, and now clearly labelled:
+`wetcoldry` and the tongue streak — both Session B's (B2), plus the fall class
+(B1). Session A's remaining debt is that all of it is measured on this Mac.
+
 ### Deliberately not planned, round 3
 
 - Everything round 2 declined stays declined (MSAA, alpha foliage, geomorphing,

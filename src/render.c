@@ -1525,9 +1525,9 @@ static void capture_current(const char *path) {
     /* the worst chunk, not a total: these describe the fill, and a total would
        describe the camera instead */
     printf("structure: edgelong=%d tritiny=%d unusedpts=%d wetcoldry=%d seamgap=%d "
-           "grounderr=%.2f groundfar=%.2f chunkverts=%d%% warn=%d\n",
+           "grounderr=%.2f groundfar=%.2f relit=%d chunkverts=%d%% warn=%d\n",
            c_edge_long, c_tri_tiny, c_unused_pts, c_wet_col_dry, c_seam_gap,
-           c_ground_err, c_ground_err_far, c_chunk_verts, gfx_warn);
+           c_ground_err, c_ground_err_far, c_relit, c_chunk_verts, gfx_warn);
     if (seg_n > 0)
         printf("rivers=%d  segments=%d  level %.1f..%.1f\n", river_count, seg_n, river_hi, river_lo);
     else

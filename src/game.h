@@ -144,7 +144,12 @@ GV(int vcount,0) /* words written into *vtarget */
    still covers the world after any change to TERRAIN_WORLD or CHUNK_CELLS. */
 #define CHUNK_GRID 50
 #define NCHUNKS (CHUNK_GRID * CHUNK_GRID)
-#define MAX_CHUNK_VERTS 40000
+/* The vertex cap is a static scratch array, not a GPU pool: each chunk's buffer
+   is created at the size it actually used (render.c), so raising this costs
+   RAM once, not per chunk. 40000 was reached to 99% by an ordinary alpine chunk
+   -- one tree more would have truncated that chunk's geometry silently -- so the
+   cap is 48000 and `chunkverts` is a gate, not a shrug. */
+#define MAX_CHUNK_VERTS 48000
 
 enum { CHUNK_EMPTY = 0, CHUNK_BUILDING, CHUNK_DONE, CHUNK_READY };
 
@@ -344,6 +349,7 @@ G(int tri_wet[MAX_DT])
 G(float tri_lvl[MAX_DT][3])
 G(float nx_[MAX_DT], ny_[MAX_DT], nz_[MAX_DT])
 G(float tri_gerr[MAX_DT])   /* facet's plane vs the ground under it, in tier spacings/3 */
+GV(int c_relit,0)           /* facets re-lit by the ground's normal (> 60 deg off) */
 G(pthread_t builder)
 GV(pthread_mutex_t job_mu,PTHREAD_MUTEX_INITIALIZER)
 GV(pthread_cond_t job_cv,PTHREAD_COND_INITIALIZER)

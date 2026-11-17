@@ -38,6 +38,7 @@ tools/render.sh replay replays/smoke.txt
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
+tools/visible.sh 1 7   # how many pixels each artifact class actually covers
 tools/analyze.sh       # clang static analyzer, all TUs
 tools/sweep.sh 1 40  # 40-seed terrain gate
 tools/terrain.sh  # per-archetype quality table (relief, land, town room)
@@ -264,6 +265,22 @@ wetcoldry seamgap grounderr groundfar chunkverts warned points buildms`.
 - **`chunkverts` is a real landmine, not a curiosity.** It reports the peak
   chunk as a percentage of `MAX_CHUNK_VERTS`, and a streamed alpine world already
   reaches 94-99%. Crossing it does not fail: the chunk's geometry is truncated.
+- **A counter says a class exists; it does not say a player can see it.**
+  `tools/visible.sh` paints one class magenta (`V_CLASS=tiny|seam|dark|fall`,
+  via `vis_match` in `src/world.c`) and counts what survives shading, TAA and
+  fog. Measured on two seeds and five cameras: `dark` 0.2-24.6% of the frame,
+  `seam` 0.3-1.8%, `tiny` 0.1-1.5%, `fall` up to 0.7%. Ask this before spending
+  a session on a counter, and ask it again after: the number is the only thing
+  that separates "unfinished" from "invisible".
+- **A chord over a crease is lit by the ground, not by its own plane.**
+  `src/world.c`'s normal pass replaces any facet normal more than 60 degrees from
+  the heightfield's normal at the centroid (taken at the tier's own spacing), and
+  `relit` counts how many needed it. This is what removed the dark shards on a
+  meadow: the plane tilted away from the sun while the ground it covered faced
+  it. Two variants were measured and rejected — re-lighting *all* high-`grounderr`
+  facets changed 26% of a cliff frame for no reason, and re-lighting hairline
+  slivers put a dark line down a sunlit cliff, because a sliver on a cliff edge
+  takes the edge's normal. Slivers stay pointed up.
 - **`grounderr` measures the mesh against the ground it claims**, as a fraction
   of a third of the tier's spacing; `grounderr` is the near tier (a bug), and
   `groundfar` (13.1) is dominated by coarse-tier cliffs, where three points

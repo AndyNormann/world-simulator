@@ -2012,8 +2012,52 @@ static void emit_fan(int nv, const float xz[5][2], const float *y, const float *
     }
 }
 
+/* --- is this class even visible? -------------------------------------------
+   A counter says how many facets of a class exist; it says nothing about
+   whether a player can see one. V_CLASS=tiny|seam|dark|fall paints that class
+   magenta so tools/visible.sh can count its pixels -- the same instrument P3/P4
+   used by hand, kept. It is a diagnostic: with the variable unset this compiles
+   to one predictable branch per facet and nothing else. */
+static const float vis_magenta[3] = { 1.0f, 0.0f, 1.0f };
+static int vis_class;
+static int vis_init;
+static int vis_match(int cls, int k, int step) {
+    if (cls == 3) return tri_gerr[k] > 1.0f;              /* dark: a chord */
+    if (cls == 4) return tri_wet[k] == 2;                 /* fall: foam reach */
+    /* tiny and seam reproduce the counter's own tests, on the facet as built */
+    const int v[3] = { dt[k].v[0], dt[k].v[1], dt[k].v[2] };
+    float ax = pts_x[v[0]], az = pts_z[v[0]];
+    float ar = 0.5f * fabsf((pts_x[v[1]] - ax) * (pts_z[v[2]] - az)
+                          - (pts_z[v[1]] - az) * (pts_x[v[2]] - ax));
+    float best = 0.0f;
+    for (int e = 0; e < 3; e++) {
+        int pa = v[e], pb = v[(e + 1) % 3];
+        float dx = pts_x[pb] - pts_x[pa], dz = pts_z[pb] - pts_z[pa];
+        float l = sqrtf(dx*dx + dz*dz);
+        if (l > best) best = l;
+        if (cls == 2 && l > 1.5f * (float)CELL && (pt_edge[pa] & pt_edge[pb]) != 0) {
+            float dev = sample_height((pts_x[pa] + pts_x[pb]) * 0.5f,
+                                      (pts_z[pa] + pts_z[pb]) * 0.5f)
+                      - 0.5f * (sample_height(pts_x[pa], pts_z[pa])
+                              + sample_height(pts_x[pb], pts_z[pb]));
+            if (dev < 0.0f) dev = -dev;
+            if (dev > 1.0f) return 1;
+        }
+    }
+    (void)step;
+    return cls == 1 && best > 0.0f && 2.0f * ar / best < 1.0f;
+}
+
 int chunk_build(int ci, int step, unsigned seed, const float *cr,
                        const float *cg, const float *cb) {
+    if (!vis_init) {
+        const char *v = getenv("V_CLASS");
+        vis_init = 1;
+        if (v && !strcmp(v, "tiny")) vis_class = 1;
+        else if (v && !strcmp(v, "seam")) vis_class = 2;
+        else if (v && !strcmp(v, "dark")) vis_class = 3;
+        else if (v && !strcmp(v, "fall")) vis_class = 4;
+    }
     const int cx = chunks[ci].cx, cz = chunks[ci].cz;
     const int c0 = cx * CHUNK_CELLS, r0 = cz * CHUNK_CELLS;
     int c1 = c0 + CHUNK_CELLS, r1 = r0 + CHUNK_CELLS;
@@ -2179,7 +2223,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         }
     }
 
-    int ntri = 0;
+    int ntri = 0, relit = 0;
     for (int k = 0; k < ndt; k++) {
         if (!dt[k].alive) continue;
         float ax = pts_x[dt[k].v[0]], az = pts_z[dt[k].v[0]];
@@ -2218,6 +2262,39 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         if (nl < 1e-9f || sliver) { nx_[k]=0; ny_[k]=1; nz_[k]=0; }
         else { nx_[k]/=nl; ny_[k]/=nl; nz_[k]/=nl; }
         if (ny_[k] < 0.0f) { nx_[k]=-nx_[k]; ny_[k]=-ny_[k]; nz_[k]=-nz_[k]; }
+
+        /* --- the chord is lit by the ground, not by its own plane ----------
+           A facet whose plane deviates from the ground under its middle is not
+           a surface: it is a chord over a crease (a pit, a river bank, a cliff
+           edge). Lighting it by its own normal is what drew the dark shards --
+           the plane tilted away from the sun while the ground it covers faces
+           it. Past 60 degrees of deviation the normal comes from the heightfield
+           instead, which is where the light actually lands. The geometry is
+           untouched: round 2 measured that no inserted point repairs these (the
+           fill re-creates them), and the honest fix is to shade the ground, not
+           to pretend the chord is one. */
+        {
+            float mx = (ax + bx + qx) / 3.0f, mz = (az + bz + qz) / 3.0f;
+            /* the estimate is taken at the tier's own spacing: at step 4 a facet
+               spans 60 units, so a one-cell difference would measure the ground
+               under a facet-width rather than the ground under the facet */
+            const float hh = 0.5f * (float)step * (float)CELL;
+            float gx = sample_height(mx + hh, mz) - sample_height(mx - hh, mz);
+            float gz = sample_height(mx, mz + hh) - sample_height(mx, mz - hh);
+            float g[3] = { -gx, 2.0f * hh, -gz };
+            float gl = sqrtf(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+            if (gl > 1e-9f) { g[0] /= gl; g[1] /= gl; g[2] /= gl; }
+            float dot = nx_[k]*g[0] + ny_[k]*g[1] + nz_[k]*g[2];
+            /* Slivers stay pointed up, deliberately: re-lighting them by the
+               ground too was tried and put a dark line down a sunlit cliff,
+               because a sliver sitting on a cliff *edge* takes the ground normal
+               of the edge, which faces away from the sun. A hairline of the
+               wrong brightness is the better fault. */
+            if (!sliver && gl > 1e-9f && dot < 0.5f) {      /* more than 60 deg */
+                nx_[k] = g[0]; ny_[k] = g[1]; nz_[k] = g[2];
+                relit++;
+            }
+        }
         ntri++;
     }
     if (ntri < 8) return 0;
@@ -2303,6 +2380,14 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            gate the LOD's existence. */
         if (step <= 1 && gerr > c_ground_err) c_ground_err = gerr;
         if (gerr > c_ground_err_far) c_ground_err_far = gerr;
+        /* Facets still lit by a normal that contradicts the ground: 0 by
+           construction once the rule above applies, so this is the invariant
+           that says the rule is actually reaching every facet. */
+        /* How many facets needed re-lighting: the prevalence of the mechanism,
+           not a defect count. The invariant "a facet is never lit by a normal
+           that contradicts the ground under it" holds by construction now, so
+           this is the alarm that says the mechanism is not spreading. */
+        if (relit > c_relit) c_relit = relit;
     }
 
     /* One river query per vertex, not per facet: the water paint wants the
@@ -2494,6 +2579,10 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         if (vcount + 3 * VERT_FLOATS > MAX_CHUNK_VERTS * VERT_FLOATS) { mesh_overflow++; break; }
         const float *bcp = bnc_pt[dt[k].v[0]];
         float nrm[3] = { nx_[k], ny_[k], nz_[k] };
+        const float *fcol = tri_col[k];   /* the facet's colour, unless V_CLASS paints it */
+        if (vis_class) {
+            if (vis_match(vis_class, k, step)) fcol = vis_magenta;
+        }
         /* The waterline is one polygon, used by both surfaces.
            The facet is cut where the bed crosses the surface level; the side
            whose bed is below the plane is underwater. A facet that is *mostly*
@@ -2550,8 +2639,9 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 wx[e][0] = fx[e][0] + sox; wx[e][1] = fx[e][1] + soz;
                 wy[e] = fy[e] + soy;
             }
-            emit_fan(3, fx, fy, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
-            emit_fan(3, wx, wy, nrm, FOAM_COL, tri_flow[k][0], tri_flow[k][1], bcp, 2.0f);
+            emit_fan(3, fx, fy, nrm, fcol, 0.0f, 0.0f, bcp, 0.0f);
+            emit_fan(3, wx, wy, nrm, vis_class ? fcol : FOAM_COL,
+                     tri_flow[k][0], tri_flow[k][1], bcp, 2.0f);
         } else if (wet && sub) {
         } else {
             float bx[3][2], by[3];
@@ -2560,10 +2650,11 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
                 bx[e][0] = pts_x[id]; bx[e][1] = pts_z[id];
                 by[e] = sample_height(pts_x[id], pts_z[id]);
             }
-            emit_fan(3, bx, by, nrm, tri_col[k], 0.0f, 0.0f, bcp, 0.0f);
+            emit_fan(3, bx, by, nrm, fcol, 0.0f, 0.0f, bcp, 0.0f);
             if (wet) {
                 const float up[3] = { 0.0f, 1.0f, 0.0f };
-                emit_fan(nv, ix, iy, up, WATER_COL, tri_flow[k][0], tri_flow[k][1], bcp,
+                emit_fan(nv, ix, iy, up, vis_class ? fcol : WATER_COL,
+                         tri_flow[k][0], tri_flow[k][1], bcp,
                          wet == 2 ? 2.0f : 1.0f);
             }
         }
