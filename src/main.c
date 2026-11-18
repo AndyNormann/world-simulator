@@ -257,6 +257,16 @@ int main(int argc, char *argv[]) {
 
     headless = 1;
     init();
+    /* --rebuild SEED without a window: tear the world down and build it again in
+       place, through the same request the overlay's button uses, *before* the
+       frame. That makes teardown completeness checkable headlessly --
+       `shot --seed 7 --rebuild 7` must be byte-identical to `shot --seed 7`, and
+       any `static` in src/world.c that world_rebuild forgets shows up as a pixel
+       difference. The windowed path could not be asked this question. */
+    if (rebuild_seed >= 0) {
+        request_world_rebuild((unsigned)rebuild_seed, terrain_force);
+        world_rebuild_if_requested();
+    }
     if (!strcmp(cmd, "shot")) {
         if (flicker_mode) flicker_probe();
         else capture(shot_path);

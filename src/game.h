@@ -231,6 +231,12 @@ extern "C" {   /* the overlay is the one C++ TU; everything else stays C */
 void ui_setup(void);
 void ui_shutdown(void);
 void ui_frame(int w, int h);        /* builds the panels for this frame */
+/* Set while the panels are being built. A world rebuild tears down ImGui, so a
+   teardown that runs *inside* ui_frame frees the context the next widget
+   touches -- that was a real SIGSEGV from the overlay's rebuild button. The
+   button now only *requests*, and this flag makes the mistake impossible rather
+   than merely fixed: world_rebuild_if_requested defers while it is set. */
+GV(int ui_in_frame,0)
 void ui_draw_pass(void);            /* draws them inside the present pass */
 int  ui_wants_mouse(void);          /* overlay open: do not steer the camera */
 void ui_toggle(void);               /* Tab */

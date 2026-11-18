@@ -89,7 +89,8 @@ int ui_event(const void *ev) {
 }
 
 void ui_frame(int w, int h) {
-    if (!alive) return;
+    if (!alive) { ui_in_frame = 0; return; }
+    ui_in_frame = 1;
     simgui_frame_desc_t fd = {};
     fd.width = w;
     fd.height = h;
@@ -181,6 +182,7 @@ void ui_frame(int w, int h) {
        inside one, so they are split across the frame boundary */
     simgui_flush();
     pending = true;      /* present_pass() calls ui_draw_pass() inside its pass */
+    ui_in_frame = 0;
 }
 
 /* Called from inside the swapchain pass that presents the frame, right before

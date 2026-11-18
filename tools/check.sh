@@ -39,6 +39,12 @@ if [ $quick -eq 0 ]; then
     # slivers, unused points, a seabed colour on dry ground, a seam chord off the
     # ground. P1..P4 of PLAN.md drive these down; today they are the "before"
     ./build/game replay replays/artifacts.txt --seed 1 --world alpine --size 960x540 >/dev/null
+    # a world built in place must equal a world built by a fresh process: this
+    # is the only test that can see a static that world_rebuild forgot, and the
+    # overlay's rebuild button goes through the same request path
+    ./build/game shot --seed 7 --size 320x180 --ssaa 1 -o build/shots/rb-fresh.png >/dev/null
+    ./build/game shot --seed 7 --rebuild 7 --size 320x180 --ssaa 1 -o build/shots/rb-inplace.png >/dev/null
+    tools/diff.sh build/shots/rb-fresh.png build/shots/rb-inplace.png --tol 0.0
     # M2: the town is geometry with walls in it, so it is walked, not just drawn
     ./build/game dump replays/town.txt --seed 12 --settlement 3 >/dev/null
     # goldens are per platform (see tools/goldens.sh): Metal and GL do not

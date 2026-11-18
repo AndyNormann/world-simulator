@@ -738,6 +738,13 @@ void request_world_rebuild(unsigned seed, int world) {
 
 void world_rebuild_if_requested(void) {
     if (!rebuild_req) return;
+    /* Never from inside the panel pass: world_rebuild tears ImGui down, and the
+       next widget would touch freed state -- the crash the overlay's button
+       caused. Deferring costs one frame and makes the mistake impossible. */
+    if (ui_in_frame) {
+        fprintf(stderr, "rebuild: deferred out of the panel pass\n");
+        return;
+    }
     rebuild_req = 0;
     if (rebuild_req_world != -2) terrain_force = rebuild_req_world;
     world_rebuild(rebuild_req_seed);

@@ -35,6 +35,7 @@ tools/render.sh replay replays/smoke.txt
 ./build/game --seed 12 --size 1280x720 --cam X,Y,Z --yaw D --pitch D --time H \
              --live build/shots/a.png   # windowed screenshot, scriptable
 ./build/game --seed 7 --rebuild 12 --live b.png  # rebuild in place (D3's gate)
+./build/game shot --seed 7 --rebuild 7 -o a.png      # same, headless; must equal --seed 7
 tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
@@ -389,6 +390,14 @@ alone can silently produce a header that does not match the headers.
   one is on screen. `simgui_flush()` builds the lists and must run *outside* a
   pass; `simgui_draw()` must run *inside* one. Both facts are now errors from
   sokol-imgui's logger instead of a silently empty screen.
+- **A rebuild in place must equal a fresh process, and that is checkable
+  headlessly now.** `shot --rebuild N` tears the world down and builds it again
+  through the same request the overlay uses, before the frame, so
+  `shot --seed 7 --rebuild 7` must be byte-identical to `shot --seed 7` --
+  `tools/check.sh` diffs them at tolerance 0.0. And `world_rebuild_if_requested`
+  refuses to run while `ui_in_frame` is set: the panel pass is the one place a
+  teardown must never happen, because it frees the ImGui context the next widget
+  touches (that was a real SIGSEGV).
 - **A rebuild in place must equal a fresh process.** `world_rebuild()` tears down
   the device, the streamer and the targets and builds again; any `static` in
   `src/world.c` that it forgets shows up as a pixel difference in
