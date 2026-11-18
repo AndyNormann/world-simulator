@@ -252,8 +252,8 @@ assert FIELD OP VALUE        OP: > < >= <= == !=
 Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees rivers shadowed_pct
 tris chunks_drawn height_min height_max`, plus the structural counters
 `overflow nonfinite trioverflow ptoverflow edgelong tritiny unusedpts
-wetcoldry seamgap grounderr groundfar relit lid nowater chunkverts warned points
-buildms`.
+wetcoldry seamgap grounderr groundfar relit lid foamfar nowater chunkverts warned
+points buildms`.
 `tris` and `chunks_drawn` need rendering, so they are skipped in `dump` mode.
 `#` starts a comment.
 
@@ -276,6 +276,12 @@ buildms`.
   rebuilds the camera can disagree with the renderer by a sign; the first
   version did, and named a facet 200 units behind the viewer. Two of every three
   guesses about "which triangle is that" were wrong before this existed.
+- **A fall is a reach, not a facet.** Whether water is falling is decided per
+  *point* (`pt_fall`, the reach's drop over two cells) and a facet is a fall if
+  its centre is on the channel and any corner is on a falling reach. Decided per
+  facet it broke into dashes, because a facet is one facet wide on a steep
+  reach; decided per point *alone* it painted whole rock faces under a summit
+  stream white, which is what `foamfar` (must be 0) gates.
 - **A hull lid is not a surface.** A triangle whose three corners are all on
   the border ring is what the convex hull leaves behind: the ring is jittered so
   it is not collinear, which also makes the chain non-convex, so the hull spans

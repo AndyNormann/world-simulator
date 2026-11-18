@@ -1544,6 +1544,24 @@ sharing that edge are now split, into two each, and `unusedpts` went 2 -> **0**
 at no measurable cost (build unchanged, goldens 0.001%). It is an invariant in
 `artifacts.txt` now.
 
+**The falls, after that (B1, done in the same pass).** The fall at
+`live-1-000`'s camera read as a white ribbon that broke into horizontal bars with
+stray plates at the foot. It was the *classification*, not the geometry: whether
+water is falling was asked per facet (its centre's reach drops over two cells),
+and a facet is one facet wide on a steep reach, so the answer alternated and the
+cascade came out dotted. Decided per **point** -- `pt_fall`, the reach's own drop
+-- and a facet is a fall when its centre is on the channel and any corner is on a
+falling reach, the curtain is continuous from the lip to the pool. Per point
+*alone* it painted whole rock faces under a summit stream white, so the channel
+test stays and `foamfar` (a foam facet whose nearest corner is more than two
+cells off any channel) is an invariant at 0.
+
+Rejected on the way: scaling the sheet's normal offset with the facet width
+(0.15 x longest edge), on the theory that ledges were burying it. It changed the
+bars not at all, which is how the classification was ruled in and the offset out.
+
+Goldens: `high` moved 2.396% (a peak with falls in view), dusk and low 0.000%.
+
 ### Session A status
 
 Closed: the dark-chord class (invariant), the vertex-cap landmine (gate), the

@@ -73,6 +73,7 @@ float key_state(const char *field) {
     if (!strcmp(field, "chunkverts")) return (float)c_chunk_verts;
     if (!strcmp(field, "relit")) return (float)c_relit;
     if (!strcmp(field, "lid")) return (float)c_lid;
+    if (!strcmp(field, "foamfar")) return (float)c_foam_far;
     if (!strcmp(field, "nowater")) return (float)c_no_water;
     /* sokol warnings. The listed benign one is filtered in game_logger; this
        must be zero, so a validation warning fails the cheap gate. */

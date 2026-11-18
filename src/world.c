@@ -2519,6 +2519,20 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         float lv = 0.0f, fxq = 0.0f, fzq = 0.0f, hwq = RIVER_HW_MIN;
         pt_riv[p] = river_query(pts_x[p], pts_z[p], &lv, &fxq, &fzq, &hwq) - hwq;
         pt_lvl[p] = lv; pt_fx[p] = fxq; pt_fz[p] = fzq;
+
+        /* Is this point on a fall? Asked per *point* rather than per facet
+           because a point is shared by every facet around it: a fall decided
+           facet by facet breaks into dashes wherever a facet's own centre
+           misses the criterion, which is one facet wide on a steep reach. The
+           test is the reach's drop over the next two cells, the same measure
+           the facet rule used. */
+        pt_fall[p] = 0;
+        if (lv > 5.0f && hwq < 40.0f) {
+            float dn = lv;
+            if (river_query(pts_x[p] + fxq * 2.0f * CELL, pts_z[p] + fzq * 2.0f * CELL,
+                            &dn, NULL, NULL, NULL) < 40.0f && lv - dn > FALL_DROP)
+                pt_fall[p] = 1;
+        }
     }
 
     /* --- drop the hull lids ------------------------------------------------
@@ -2550,7 +2564,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
 
     /* --- one colour per facet ------------------------------------------- */
     float top = -1e9f, bot = 1e9f;
-    int wet_col_dry = 0;
+    int wet_col_dry = 0, foam_far = 0;
     for (int k = 0; k < ndt; k++) {
         if (!dt[k].alive) continue;
         float cxw = (pts_x[dt[k].v[0]] + pts_x[dt[k].v[1]] + pts_x[dt[k].v[2]]) / 3.0f;
@@ -2654,7 +2668,15 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
            enough for the surface over it (a channel is narrower than a facet),
            but foam on a bank facet is a white wedge lying on the sand */
         float ins_mean = (pt_riv[dt[k].v[0]] + pt_riv[dt[k].v[1]] + pt_riv[dt[k].v[2]]) / 3.0f;
-        int falling = ny_[k] < 0.55f && ins_mean < 0.0f;
+        /* A fall is the *channel* falling, so the facet still has to be on the
+           channel -- the per-point flag only makes the decision continuous.
+           Without the channel test every facet that merely touches a falling
+           point is painted as a foam sheet, which turned whole rock faces under
+           a summit stream into white ribbons tens of units wide. */
+        int in_channel = ins_mean < (float)CELL;
+        int on_fall = pt_fall[dt[k].v[0]] || pt_fall[dt[k].v[1]] || pt_fall[dt[k].v[2]];
+        int falling = (ny_[k] < 0.55f && ins_mean < 0.0f)
+                   || (in_channel && on_fall);
         /* Where the surface goes. The bed keeps its terrain colour underneath
            and is what shows as the beach wherever it rises out of the water, so
            this loop decides the surface's height and its ripple and the emit
@@ -2704,10 +2726,22 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
             }
         }
 
+        /* A foam sheet belongs to a channel. Without the channel test the
+           per-point fall flag turned whole rock faces under a summit stream
+           into white ribbons tens of units wide, so this is an invariant now:
+           the count must be zero, and the day it is not, something is painting
+           foam on ground that has no river on it. */
+        /* "on a channel" is the rule the classification itself uses: at least
+           one corner inside it (`inside` is the nearest corner), because a
+           channel is narrower than a facet. What this catches is foam with *no*
+           corner in a channel -- a sheet painted on dry ground. */
+        if (tri_wet[k] == 2 && inside > 2.0f * (float)CELL) foam_far++;
+
         tri_col[k][0] = r; tri_col[k][1] = g; tri_col[k][2] = b;
         tri_flow[k][0] = fx2; tri_flow[k][1] = fz2;
     }
     if (wet_col_dry > c_wet_col_dry) c_wet_col_dry = wet_col_dry;
+    if (foam_far > c_foam_far) c_foam_far = foam_far;
     /* Bounds are written by the builder and read by the cull on the render
        thread, which may be drawing the previous build of this chunk at the same
        time: a relaxed atomic is the honest description of that -- the values are

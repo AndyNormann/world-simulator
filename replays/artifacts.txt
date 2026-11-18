@@ -79,6 +79,11 @@ assert relit <= 90
 # every chunk rebuilt in the replay, hence the size; the point of the assert is
 # that the pass is alive, so a real change shows up as a decision here.
 assert lid > 100
+# Foam belongs on a channel. The fall flag is decided per *point* so that a
+# cascade is continuous (per facet it broke into dashes, because one facet is
+# one facet wide on a steep reach), and the facet still has to be on the channel
+# or whole rock faces under a summit stream turn white. This count is 0.
+assert foamfar == 0
 # An invariant, not an alarm: a facet that the builder called water must emit a
 # water surface. This is 0; the day it is not, the lake has a hole in it and the
 # player sees the far cliff through it.

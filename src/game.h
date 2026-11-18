@@ -189,6 +189,9 @@ typedef struct {
 #define RIVER_MAX 400
 #define RIVER_MAX_SEG 6400
 #define RIVER_HW_MIN  7.0f
+/* Water dropping more than this over two cells (30 units) is a fall, not a
+   reach. One number, used by the per-point test and by nothing else. */
+#define FALL_DROP     14.0f
 #define RIVER_HW_MAX 24.0f
 #define RIVER_BANK   18.0f   /* bank reaches natural ground this far out */
 #define SEG_BUCKET 128.0f
@@ -312,6 +315,7 @@ G(float pts_x[MAX_PTS + 3], pts_z[MAX_PTS + 3])
 /* per-chunk-point river sample: distance past the half-width, and the level
    and direction the water paint takes when this point is the most inside */
 G(float pt_riv[MAX_PTS + 3], pt_lvl[MAX_PTS + 3], pt_fx[MAX_PTS + 3], pt_fz[MAX_PTS + 3])
+G(unsigned char pt_fall[MAX_PTS + 3])   /* the reach drops > FALL_DROP here */
 G(float bnc_pt[MAX_PTS + 3][SUN_SECTORS * 3])
 GV(int npts,0)
 GV(int ndt,0)
@@ -354,6 +358,7 @@ G(float nx_[MAX_DT], ny_[MAX_DT], nz_[MAX_DT])
 G(float tri_gerr[MAX_DT])   /* facet's plane vs the ground under it, in tier spacings/3 */
 GV(int c_relit,0)           /* facets re-lit by the ground's normal (> 60 deg off) */
 GV(int c_lid,0)             /* hull lids dropped: border triangles that lied */
+GV(int c_foam_far,0)        /* foam facets that are not on a channel (must be 0) */
 GV(int c_no_water,0)        /* wet facets that emitted no water surface: must be 0 */
 /* The matrix the last frame drew with. The pixel->facet oracle (PICK) uses this
    rather than rebuilding a view and projection of its own: a second copy of the
