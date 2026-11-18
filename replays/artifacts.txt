@@ -72,6 +72,13 @@ assert unusedpts == 0
 # prevalence of the dark-chord mechanism, not a defect count. It is 49-59 here;
 # a jump means the fill is producing chords faster than the fill fixes them.
 assert relit <= 90
+# Hull lids dropped: a triangle with all three corners on the border ring is the
+# triangle the convex hull leaves when the jittered chain bulges inward, and where
+# its three corners' heights span a cliff it is a vertical sheet standing face-on
+# to a camera across the valley -- the rock wedge at the coast. Cumulative over
+# every chunk rebuilt in the replay, hence the size; the point of the assert is
+# that the pass is alive, so a real change shows up as a decision here.
+assert lid > 100
 # An invariant, not an alarm: a facet that the builder called water must emit a
 # water surface. This is 0; the day it is not, the lake has a hole in it and the
 # player sees the far cliff through it.

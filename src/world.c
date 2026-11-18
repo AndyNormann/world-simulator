@@ -2521,6 +2521,33 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         pt_lvl[p] = lv; pt_fx[p] = fxq; pt_fz[p] = fzq;
     }
 
+    /* --- drop the hull lids ------------------------------------------------
+       A triangle whose three corners are ALL on the border ring is a lid: the
+       ring is jittered so it is not collinear, which also makes it non-convex,
+       so the convex hull of the chunk spans the points that bulge inward, and
+       the lid is the triangle left along that span. In plan it is under a unit
+       wide, so it covers only the half-unit band the two chunks already share --
+       but its corners can be 250 units apart along the chain, and where the
+       border climbs a cliff their heights differ by 200, so it is a *vertical
+       sheet* standing face-on to a camera across the valley. That is the bright
+       rock wedge at the coast: PICK names three ring points, width 0.36, gerr
+       12.7, corners at h=176/156/-14.
+       Where the lid agrees with its ground it is harmless and stays (it is what
+       closes the band). Where it disagrees it is drawing a sheet over the
+       valley, and the neighbour chunk's own lid covers the same band, so it can
+       go. Near tier only: a coarse chunk's hull spans much more than a unit. */
+    int lid_drop = 0;
+    if (step <= 1) {
+        for (int k = 0; k < ndt; k++) {
+            if (!dt[k].alive) continue;
+            if (!pt_edge[dt[k].v[0]] || !pt_edge[dt[k].v[1]] || !pt_edge[dt[k].v[2]]) continue;
+            if (tri_gerr[k] <= 1.0f) continue;
+            dt[k].alive = 0;
+            lid_drop++;
+        }
+        if (lid_drop) c_lid += lid_drop;
+    }
+
     /* --- one colour per facet ------------------------------------------- */
     float top = -1e9f, bot = 1e9f;
     int wet_col_dry = 0;

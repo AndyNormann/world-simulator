@@ -252,7 +252,8 @@ assert FIELD OP VALUE        OP: > < >= <= == !=
 Assertable fields: `cam_x cam_y cam_z yaw pitch hour trees rivers shadowed_pct
 tris chunks_drawn height_min height_max`, plus the structural counters
 `overflow nonfinite trioverflow ptoverflow edgelong tritiny unusedpts
-wetcoldry seamgap grounderr groundfar chunkverts warned points buildms`.
+wetcoldry seamgap grounderr groundfar relit lid nowater chunkverts warned points
+buildms`.
 `tris` and `chunks_drawn` need rendering, so they are skipped in `dump` mode.
 `#` starts a comment.
 
@@ -275,6 +276,18 @@ wetcoldry seamgap grounderr groundfar chunkverts warned points buildms`.
   rebuilds the camera can disagree with the renderer by a sign; the first
   version did, and named a facet 200 units behind the viewer. Two of every three
   guesses about "which triangle is that" were wrong before this existed.
+- **A hull lid is not a surface.** A triangle whose three corners are all on
+  the border ring is what the convex hull leaves behind: the ring is jittered so
+  it is not collinear, which also makes the chain non-convex, so the hull spans
+  the points that bulge inward. In plan it is under a unit wide -- it only covers
+  the half-unit band the two chunks already share -- but its corners can be 250
+  units apart along the chain, so where the border climbs a cliff the lid is a
+  *vertical sheet* standing face-on to a camera across the valley: the bright
+  rock wedge at the coast. `chunk_build` drops the ones whose ground error is
+  over 1.0 (counter `lid`). Do not try to fix these by inserting points or by
+  straightening the jitter -- measured, both are worse: interior points cannot
+  change a hull, and a straight chain turns every lid into one 267-unit chord
+  (`grounderr` 9.35 -> 50.94).
 - **A counter says a class exists; it does not say a player can see it.**
   `tools/visible.sh` paints one class magenta (`V_CLASS=tiny|seam|dark|fall`,
   via `vis_match` in `src/world.c`) and counts what survives shading, TAA and

@@ -1514,19 +1514,27 @@ the hull, the hull spans past it, and the lid is the triangle left behind. On a
 sloping border the three heights differ by ~100 units, so it is a sheet standing
 in the air -- the wedge, and why it is lit unlike the ground around it.
 
-Three remedies were then measured and all are **worse**, which is worth as much
-as the diagnosis:
+It is a **hull lid**, and that framing is what made it fixable. Four remedies
+were measured; the first three are worse and the fourth is the fix:
 
 | remedy | result |
 |---|---|
-| straight ring (no jitter) | `grounderr` 9.35 -> **50.94**, `edgelong` 2 -> 12: collinear chain points are skipped and the chords come back |
-| stitch the chain (split long hull edges at the skipped points) | `tritiny` 88 -> **278**, `seamgap` 135 -> **293**: splitting a lid along its length yields lids |
-| straight ring **plus** an inset row one cell inside | `grounderr` still 50.94 -- the chords are not the jitter |
+| straight ring (no jitter) | `grounderr` 9.35 -> **50.94**, `edgelong` 2 -> 12: collinear chain points are skipped and every lid becomes one 267-unit chord |
+| stitch the chain (split long hull edges at the skipped points) | `tritiny` 88 -> **278**, `seamgap` 135 -> **293**, and the two spikes merge into a *wider* sheet: a fan across a sliver is still a sliver |
+| an inset row one cell inside the ring (jitter kept) | **no pixel change at all** -- interior points cannot change a convex hull |
+| **drop the lid when it lies about its ground** (`tri_gerr > 1`, near tier) | the wedges are gone at both reported cameras, no crack, `cull` 0.00, `rebuild` 0.00-0.03 |
 
-So the fix is neither the jitter nor refinement: it is to make the border chain a
-**constraint** of the triangulation (a constrained Delaunay over the ring, or a
-lid dropped with the crack covered). Both are session-sized, and that is where
-this stops rather than shipping a fourth guess.
+The last one is the right shape of fix because of what a lid *is*: it covers only
+the half-unit band the two chunks already share, so the neighbour chunk's own lid
+covers the same ground and dropping one is not a hole. Doing it only where the
+lintel disagrees with the ground under it keeps the ordinary thin lids, which
+follow the chain and are what closes that band locally. Counter `lid` (2014 at
+the wedge camera, 1262-5613 cumulative across the six artifact views), asserted
+`lid > 100` in `artifacts.txt` so that the pass disappearing is a decision rather
+than a silence.
+
+Pixels moved by the mechanism, not by accident: goldens re-recorded at dusk
+0.026% / high 0.225% / low 0.197% against HEAD, `pixels>8` up to 0.80%.
 
 What the session *did* land, besides the oracle, is one real repair. The weld
 pass only fixed unused points that lay strictly inside a facet, so a point
