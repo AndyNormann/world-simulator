@@ -354,6 +354,11 @@ G(float nx_[MAX_DT], ny_[MAX_DT], nz_[MAX_DT])
 G(float tri_gerr[MAX_DT])   /* facet's plane vs the ground under it, in tier spacings/3 */
 GV(int c_relit,0)           /* facets re-lit by the ground's normal (> 60 deg off) */
 GV(int c_no_water,0)        /* wet facets that emitted no water surface: must be 0 */
+/* The matrix the last frame drew with. The pixel->facet oracle (PICK) uses this
+   rather than rebuilding a view and projection of its own: a second copy of the
+   camera is a second chance to disagree with the renderer, which is exactly how
+   the first version of the oracle answered with a facet nobody could see. */
+G(float gfx_mvp[16])
 G(pthread_t builder)
 GV(pthread_mutex_t job_mu,PTHREAD_MUTEX_INITIALIZER)
 GV(pthread_cond_t job_cv,PTHREAD_COND_INITIALIZER)

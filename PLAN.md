@@ -1490,33 +1490,51 @@ pixels. All six changed nothing there, and that is the useful part:
 | it wants a point in its middle | centroid insertion on shards, near tier | nothing |
 | it wants its longest 3D edge split | edge split on the floating side | nothing |
 
-The measurements that did land: width-of-wedge pixels are **1–4 units wide**, the
-facets are **not** steep, and `V_CLASS=all` proves they are ordinary terrain
-facets. Then a pixel→facet oracle (`PICK=x,y`, temporarily added) was built to name the
-owner. It answered with a triangle one unit wide and 163 units long whose long
-edge lies on a chunk border ring line -- and **that answer is wrong**: its corners
-sit at heights -14 / 32 / 84 where the heightfield is a smooth 8-30 basin, and its
-`depth` printed 0.000 for every candidate, so the projection is off. The oracle is
-half-built: the hit test works, the camera matrices do not.
+The measurements that did land: width-of-wedge pixels are **1–4 units wide**,
+the facets are **not** steep, and `V_CLASS=all` proves they are ordinary terrain
+facets.
 
-Why the counters stay quiet about it: `edgelong` reads 2 per chunk, which *is*
-this facet — the alarm is already at the value the artifact needs, so it stopped
-being an alarm. `tritiny` counts it too (width 0.58 < 1) among 89 others per
-chunk. A counter that counts the artifact but cannot distinguish it from
-harmless neighbours cannot drive a fix.
+**The oracle now works, and it names the facet.** The first version rebuilt the
+camera itself and answered with a facet 200 units behind the viewer; the shipped
+one (`PICK=x,y`, in `src/world.c`) projects with `gfx_mvp` -- the matrix
+`render()` actually uploaded -- and `PICK_PAINT=1` paints the hits, which is how
+it was checked: the picked pixel came back magenta. At the wedge:
 
-What the session *did* land is one real repair. The weld pass only fixed unused
-points that lay strictly inside a facet, so a point sitting **on an edge** was
-"repaired" by splitting one facet into three, one of which is degenerate --
-`dt_add` drops it and the long edge survives. Both facets sharing that edge are
-now split, into two each, and `unusedpts` went 2 -> **0** at no measurable cost
-(build unchanged, goldens 0.001%). It is an invariant in `artifacts.txt` now.
+```
+PICKHIT ci=1361 step=1 dist=277.8 width=0.36 gerr=2.33 wet=0 col=0.48,0.32,0.18 ring=1,1,1
+        a=(-4872,1019,37) b=(-4873,1064,84) c=(-4872,841,-14)
+```
 
-**The next step is the oracle, then the ring.** The six measured-and-failed
-attempts above are evidence that *identifying* which triangle owns a pixel is the
-bottleneck, not the supply of plausible rules. So: finish `PICK` against a
-hand-checked facet, then look at the ring with it. Phase B1 of round 3 owns the
-falls; this needs its own phase.
+All three corners are **border-ring points**, the triangle is 0.36 units wide and
+163 long, and its corners span 98 units of height: it is a **hull lid** along a
+chunk border, not a chord over the interior. The ring is jittered so its points
+are not collinear (a collinear run is degenerate for the circumcircle test), and
+that jitter makes the chain non-convex: a point that bulges *inward* is skipped by
+the hull, the hull spans past it, and the lid is the triangle left behind. On a
+sloping border the three heights differ by ~100 units, so it is a sheet standing
+in the air -- the wedge, and why it is lit unlike the ground around it.
+
+Three remedies were then measured and all are **worse**, which is worth as much
+as the diagnosis:
+
+| remedy | result |
+|---|---|
+| straight ring (no jitter) | `grounderr` 9.35 -> **50.94**, `edgelong` 2 -> 12: collinear chain points are skipped and the chords come back |
+| stitch the chain (split long hull edges at the skipped points) | `tritiny` 88 -> **278**, `seamgap` 135 -> **293**: splitting a lid along its length yields lids |
+| straight ring **plus** an inset row one cell inside | `grounderr` still 50.94 -- the chords are not the jitter |
+
+So the fix is neither the jitter nor refinement: it is to make the border chain a
+**constraint** of the triangulation (a constrained Delaunay over the ring, or a
+lid dropped with the crack covered). Both are session-sized, and that is where
+this stops rather than shipping a fourth guess.
+
+What the session *did* land, besides the oracle, is one real repair. The weld
+pass only fixed unused points that lay strictly inside a facet, so a point
+sitting **on an edge** was "repaired" by splitting one facet into three, one of
+which is degenerate -- `dt_add` drops it and the long edge survives. Both facets
+sharing that edge are now split, into two each, and `unusedpts` went 2 -> **0**
+at no measurable cost (build unchanged, goldens 0.001%). It is an invariant in
+`artifacts.txt` now.
 
 ### Session A status
 

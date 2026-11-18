@@ -858,6 +858,7 @@ void render(int w, int h) {
     proj[8] -= jx;
     proj[9] -= jy;
     mat4_mul(mvp, proj, view);
+    memcpy(gfx_mvp, mvp, sizeof(gfx_mvp));      /* the oracle reads exactly this */
 
     /* --- day/night palette + animation state, uploaded as one blob --- */
     float pal[PAL_VECS * 4];

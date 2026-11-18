@@ -39,6 +39,7 @@ tools/test.sh          # math_test + terrain_test + replays/smoke.txt, no GPU
 tools/diff.sh A.png B.png [--tol 0.3] [--heat out.png]
 tools/goldens.sh       # re-record tests/golden/ — only when the change is intended
 tools/visible.sh 1 7   # how many pixels each artifact class actually covers
+PICK=600,430 ./build/game shot ...   # which facet does the renderer draw there?
 tools/analyze.sh       # clang static analyzer, all TUs
 tools/sweep.sh 1 40  # 40-seed terrain gate
 tools/terrain.sh  # per-archetype quality table (relief, land, town room)
@@ -265,6 +266,15 @@ wetcoldry seamgap grounderr groundfar chunkverts warned points buildms`.
 - **`chunkverts` is a real landmine, not a curiosity.** It reports the peak
   chunk as a percentage of `MAX_CHUNK_VERTS`, and a streamed alpine world already
   reaches 94-99%. Crossing it does not fail: the chunk's geometry is truncated.
+- **When you can see an artifact and cannot name it, ask the renderer.**
+  `PICK=x,y` prints every facet whose projection covers that pixel -- chunk,
+  tier, distance, width, ground error, water class, colour, and whether each
+  corner is a border-ring point -- and `PICK_PAINT=1` paints them magenta so the
+  answer is checked against the picture rather than trusted. It projects with
+  `gfx_mvp`, the matrix `render()` actually uploaded, because an oracle that
+  rebuilds the camera can disagree with the renderer by a sign; the first
+  version did, and named a facet 200 units behind the viewer. Two of every three
+  guesses about "which triangle is that" were wrong before this existed.
 - **A counter says a class exists; it does not say a player can see it.**
   `tools/visible.sh` paints one class magenta (`V_CLASS=tiny|seam|dark|fall`,
   via `vis_match` in `src/world.c`) and counts what survives shading, TAA and

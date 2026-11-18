@@ -2021,6 +2021,19 @@ static void emit_fan(int nv, const float xz[5][2], const float *y, const float *
 static const float vis_magenta[3] = { 1.0f, 0.0f, 1.0f };
 static int vis_class;
 static int vis_init;
+/* PICK=x,y: print the facet the renderer draws at that pixel. PICK_PAINT=1
+   paints it, so the answer can be checked against the picture. */
+static int pick_x = -1, pick_y = -1, pick_init, pick_paint;
+static unsigned char pick_hit[MAX_DT];
+static void pick_setup(void) {
+    const char *pk = getenv("PICK");
+    pick_init = 1;
+    if (pk) sscanf(pk, "%d,%d", &pick_x, &pick_y);
+    pick_paint = getenv("PICK_PAINT") != NULL;
+    if (pick_x >= 0)
+        fprintf(stderr, "PICK %d,%d  viewport %dx%d  cam %.1f,%.1f,%.1f\n",
+                pick_x, pick_y, gfx_w, gfx_h, (double)cam_x, (double)cam_y, (double)cam_z);
+}
 static int vis_match(int cls, int k, int step) {
     if (cls == 3) return tri_gerr[k] > 1.0f;              /* dark: a chord */
     if (cls == 4) return tri_wet[k] == 2;                 /* fall: foam reach */
@@ -2050,6 +2063,7 @@ static int vis_match(int cls, int k, int step) {
 
 int chunk_build(int ci, int step, unsigned seed, const float *cr,
                        const float *cg, const float *cb) {
+    if (!pick_init) pick_setup();
     if (!vis_init) {
         const char *v = getenv("V_CLASS");
         vis_init = 1;
@@ -2341,6 +2355,71 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
     }
     if (ntri < 8) return 0;
 
+    /* --- PICK: which facet does the renderer draw at this pixel? ------------
+       Prints every facet whose projection covers the pixel with the numbers
+       needed to judge it: chunk, tier, distance, width, ground error, water
+       class, colour and the three corners in world space and on screen. Facets
+       hidden behind it print too, so the nearest is the answer.
+
+       It projects with gfx_mvp -- the *same* matrix render() uploaded -- because
+       the first version rebuilt the camera itself and answered with a facet 200
+       units behind the viewer. PICK_PAINT=1 paints the hits, which is how this
+       one was checked: the picked pixel came back magenta. */
+    if (pick_x >= 0) {
+        for (int k = 0; k < ndt; k++) {
+            if (!dt[k].alive) continue;
+            float sx[3], sy[3];
+            int inside_screen = 1;
+            for (int q = 0; q < 3; q++) {
+                int p3 = dt[k].v[q];
+                float nx, ny, nz;
+                mat4_point(gfx_mvp, pts_x[p3], sample_height(pts_x[p3], pts_z[p3]),
+                           pts_z[p3], &nx, &ny, &nz);
+                sx[q] = (nx * 0.5f + 0.5f) * (float)gfx_w;
+                sy[q] = (1.0f - (ny * 0.5f + 0.5f)) * (float)gfx_h;
+                if (!(nz > 0.0f && nz < 1.0f)) inside_screen = 0;
+            }
+            if (!inside_screen) continue;               /* outside the frustum */
+            float px = (float)pick_x, py = (float)pick_y;
+            float d1 = (sy[1]-sy[2])*(sx[0]-sx[2]) + (sx[2]-sx[1])*(sy[0]-sy[2]);
+            if (fabsf(d1) < 1e-9f) continue;
+            float u = ((sy[1]-sy[2])*(px-sx[2]) + (sx[2]-sx[1])*(py-sy[2])) / d1;
+            float v2 = ((sy[2]-sy[0])*(px-sx[2]) + (sx[0]-sx[2])*(py-sy[2])) / d1;
+            if (u < 0.0f || v2 < 0.0f || u + v2 > 1.0f) continue;
+            if (pick_paint) pick_hit[k] = 1;
+            float h[3];
+            for (int q = 0; q < 3; q++) {
+                int p3 = dt[k].v[q];
+                h[q] = sample_height(pts_x[p3], pts_z[p3]);
+            }
+            float ax = pts_x[dt[k].v[0]], az = pts_z[dt[k].v[0]];
+            float ar = 0.5f * fabsf((pts_x[dt[k].v[1]] - ax) * (pts_z[dt[k].v[2]] - az)
+                                  - (pts_z[dt[k].v[1]] - az) * (pts_x[dt[k].v[2]] - ax));
+            float bl = 0.0f;
+            for (int e = 0; e < 3; e++) {
+                float dx = pts_x[dt[k].v[e]] - pts_x[dt[k].v[(e + 1) % 3]];
+                float dz = pts_z[dt[k].v[e]] - pts_z[dt[k].v[(e + 1) % 3]];
+                float l = sqrtf(dx*dx + dz*dz);
+                if (l > bl) bl = l;
+            }
+            float cxm = (ax + pts_x[dt[k].v[1]] + pts_x[dt[k].v[2]]) / 3.0f;
+            float czm = (az + pts_z[dt[k].v[1]] + pts_z[dt[k].v[2]]) / 3.0f;
+            float cym = (h[0] + h[1] + h[2]) / 3.0f;
+            float ddx = cxm - cam_x, ddy = cym - cam_y, ddz = czm - cam_z;
+            fprintf(stderr, "PICKHIT ci=%d step=%d dist=%.1f width=%.2f gerr=%.2f wet=%d "
+                    "col=%.2f,%.2f,%.2f ring=%d,%d,%d "
+                    "a=(%.0f,%.0f,%.0f) b=(%.0f,%.0f,%.0f) c=(%.0f,%.0f,%.0f)\n",
+                    ci, step, (double)sqrtf(ddx*ddx + ddy*ddy + ddz*ddz),
+                    bl > 0.0f ? (double)(2.0f * ar / bl) : 0.0, (double)tri_gerr[k], tri_wet[k],
+                    (double)tri_col[k][0], (double)tri_col[k][1], (double)tri_col[k][2],
+                    pt_edge[dt[k].v[0]] ? 1 : 0, pt_edge[dt[k].v[1]] ? 1 : 0,
+                    pt_edge[dt[k].v[2]] ? 1 : 0,
+                    (double)pts_x[dt[k].v[0]], (double)pts_z[dt[k].v[0]], (double)h[0],
+                    (double)pts_x[dt[k].v[1]], (double)pts_z[dt[k].v[1]], (double)h[1],
+                    (double)pts_x[dt[k].v[2]], (double)pts_z[dt[k].v[2]], (double)h[2]);
+        }
+    }
+
     /* --- structural counts -------------------------------------------------
        The fill is a Delaunay of a jittered point set, so it can produce a facet
        nobody designed: the border ring is exactly collinear and the interior's
@@ -2623,6 +2702,7 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         const float *bcp = bnc_pt[dt[k].v[0]];
         float nrm[3] = { nx_[k], ny_[k], nz_[k] };
         const float *fcol = tri_col[k];   /* the facet's colour, unless V_CLASS paints it */
+        if (pick_paint && pick_hit[k]) fcol = vis_magenta;   /* PICK: show the answer */
         if (vis_class) {
             if (vis_match(vis_class, k, step)) fcol = vis_magenta;
         }
