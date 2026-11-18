@@ -1474,6 +1474,50 @@ covered it because the flag happened to run between frames. Anything the overlay
 can trigger needs a headless-expressible equivalent, or it is untested by
 construction.
 
+### The wedges at the coast — a queue of failed hypotheses, then an answer
+
+Reported from a window at `cam -4646.2,196.9,977.9 yaw -446.39 pitch -28.74`
+(seed 1 alpine): long thin orange wedges lying across green ground, tapering to
+a point at the water. Six fixes were tried and each was measured against the same
+pixels. All six changed nothing there, and that is the useful part:
+
+| hypothesis | test | result |
+|---|---|---|
+| it's the dark-chord class, wrongly coloured | paint `tri_gerr > 1` (`V_CLASS=dark`) | only part of the wedge |
+| it's a hairline sliver | `V_CLASS=thin` (width < 4) | only part of it |
+| it's steep | `V_CLASS=steep` (ny < 0.34) | almost nothing painted |
+| its colour comes from the centroid | average the three corner colours | 3.0% of the frame moved, wedges identical |
+| it wants a point in its middle | centroid insertion on shards, near tier | nothing |
+| it wants its longest 3D edge split | edge split on the floating side | nothing |
+
+The measurements that did land: width-of-wedge pixels are **1–4 units wide**, the
+facets are **not** steep, and `V_CLASS=all` proves they are ordinary terrain
+facets. Then a pixel→facet oracle (`PICK=x,y`, temporarily added) was built to name the
+owner. It answered with a triangle one unit wide and 163 units long whose long
+edge lies on a chunk border ring line -- and **that answer is wrong**: its corners
+sit at heights -14 / 32 / 84 where the heightfield is a smooth 8-30 basin, and its
+`depth` printed 0.000 for every candidate, so the projection is off. The oracle is
+half-built: the hit test works, the camera matrices do not.
+
+Why the counters stay quiet about it: `edgelong` reads 2 per chunk, which *is*
+this facet — the alarm is already at the value the artifact needs, so it stopped
+being an alarm. `tritiny` counts it too (width 0.58 < 1) among 89 others per
+chunk. A counter that counts the artifact but cannot distinguish it from
+harmless neighbours cannot drive a fix.
+
+What the session *did* land is one real repair. The weld pass only fixed unused
+points that lay strictly inside a facet, so a point sitting **on an edge** was
+"repaired" by splitting one facet into three, one of which is degenerate --
+`dt_add` drops it and the long edge survives. Both facets sharing that edge are
+now split, into two each, and `unusedpts` went 2 -> **0** at no measurable cost
+(build unchanged, goldens 0.001%). It is an invariant in `artifacts.txt` now.
+
+**The next step is the oracle, then the ring.** The six measured-and-failed
+attempts above are evidence that *identifying* which triangle owns a pixel is the
+bottleneck, not the supply of plausible rules. So: finish `PICK` against a
+hand-checked facet, then look at the ring with it. Phase B1 of round 3 owns the
+falls; this needs its own phase.
+
 ### Session A status
 
 Closed: the dark-chord class (invariant), the vertex-cap landmine (gate), the

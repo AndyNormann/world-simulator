@@ -2201,25 +2201,67 @@ int chunk_build(int ci, int step, unsigned seed, const float *cr,
         }
         for (int p = 0; p < npts; p++) {
             if (used[p]) continue;
+            float px2 = pts_x[p], pz2 = pts_z[p];
+            /* 1. strictly inside a facet: split it into three. Absolute tolerance
+               because the cross products scale with the facet, and a split that
+               lands within a unit of an edge makes a triangle under a pixel wide
+               -- a "repair" that leaves the needle standing. */
+            int hit = -1;
+            for (int k = 0; k < ndt && hit < 0; k++) {
+                if (!dt[k].alive) continue;
+                int va = dt[k].v[0], vb = dt[k].v[1], vc = dt[k].v[2];
+                float ax = pts_x[va], az = pts_z[va];
+                float bx = pts_x[vb], bz = pts_z[vb];
+                float cx2 = pts_x[vc], cz2 = pts_z[vc];
+                float d1 = (bx-ax)*(pz2-az) - (bz-az)*(px2-ax);
+                float d2 = (cx2-bx)*(pz2-bz) - (cz2-bz)*(px2-bx);
+                float d3 = (ax-cx2)*(pz2-cz2) - (az-cz2)*(px2-cx2);
+                int pos = (d1 > 3.0f) + (d2 > 3.0f) + (d3 > 3.0f);
+                int neg = (d1 < -3.0f) + (d2 < -3.0f) + (d3 < -3.0f);
+                if (pos != 3 && neg != 3) continue;
+                dt[k].alive = 0;
+                dt_add(va, vb, p);
+                dt_add(vb, vc, p);
+                dt_add(vc, va, p);
+                hit = k;
+            }
+            if (hit >= 0) { used[p] = 1; continue; }
+
+            /* 2. sitting *on* an edge: splitting one facet into three makes one
+               of them degenerate, dt_add drops it, and the long edge -- with the
+               needle hanging off it -- survives. That is the border-ring needle:
+               the sample is on the ring, the fill bridged the ring, and the
+               player sees a triangle one unit wide and a hundred and sixty long.
+               Both facets sharing the edge are split, into two each. */
+            int ea = -1, eb = -1;
+            for (int k = 0; k < ndt && ea < 0; k++) {
+                if (!dt[k].alive) continue;
+                for (int e = 0; e < 3; e++) {
+                    int va = dt[k].v[e], vb = dt[k].v[(e + 1) % 3];
+                    float dx = pts_x[vb] - pts_x[va], dz = pts_z[vb] - pts_z[va];
+                    float l2 = dx*dx + dz*dz;
+                    if (l2 < 1e-6f) continue;
+                    float t = ((px2 - pts_x[va]) * dx + (pz2 - pts_z[va]) * dz) / l2;
+                    if (t < 0.02f || t > 0.98f) continue;      /* not between */
+                    float offx = pts_x[va] + dx * t - px2;
+                    float offz = pts_z[va] + dz * t - pz2;
+                    if (offx*offx + offz*offz > 1.0f) continue;   /* over a unit off */
+                    ea = va; eb = vb;
+                    break;
+                }
+            }
+            if (ea < 0) continue;                              /* genuinely outside */
             for (int k = 0; k < ndt; k++) {
                 if (!dt[k].alive) continue;
-                int a = dt[k].v[0], b = dt[k].v[1], c = dt[k].v[2];
-                float ax = pts_x[a], az = pts_z[a];
-                float bx = pts_x[b], bz = pts_z[b];
-                float cx2 = pts_x[c], cz2 = pts_z[c];
-                float d1 = (bx-ax)*(pts_z[p]-az) - (bz-az)*(pts_x[p]-ax);
-                float d2 = (cx2-bx)*(pts_z[p]-bz) - (cz2-bz)*(pts_x[p]-bx);
-                float d3 = (ax-cx2)*(pts_z[p]-cz2) - (az-cz2)*(pts_x[p]-cx2);
-                /* winding is not fixed, so accept a point on either side */
-                int pos = (d1 >= 0.0f) + (d2 >= 0.0f) + (d3 >= 0.0f);
-                if (pos != 0 && pos != 3) continue;
+                int va = dt[k].v[0], vb = dt[k].v[1], vc = dt[k].v[2];
+                if (!(va == ea || vb == ea || vc == ea)) continue;
+                if (!(va == eb || vb == eb || vc == eb)) continue;
+                int far2 = (va == ea || va == eb) ? ((vb == ea || vb == eb) ? vc : vb) : va;
                 dt[k].alive = 0;
-                dt_add(a, b, p);
-                dt_add(b, c, p);
-                dt_add(c, a, p);
-                used[p] = 1;
-                break;
+                dt_add(ea, p, far2);
+                dt_add(p, eb, far2);
             }
+            used[p] = 1;
         }
     }
 

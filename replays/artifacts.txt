@@ -55,7 +55,6 @@ shot build/shots/art-6-river.png
 # structural health after 6 views (which stream in every tier at least once)
 assert edgelong <= 20
 assert tritiny <= 120
-assert unusedpts <= 10
 assert wetcoldry <= 80
 assert seamgap <= 200
 # How far a facet's own plane is from the ground under it, in thirds of a tier
@@ -66,7 +65,9 @@ assert groundfar <= 16
 # pool exhaustion and stripped uniforms are warnings: they must never appear
 assert warned == 0
 assert chunkverts < 88
-assert unusedpts <= 6
+# A point the fill placed and the triangulation then ignored: the weld repairs
+# both cases (inside a facet, and on an edge of one), so this is an invariant now.
+assert unusedpts == 0
 # facets re-lit by the ground's normal instead of their own plane: the
 # prevalence of the dark-chord mechanism, not a defect count. It is 49-59 here;
 # a jump means the fill is producing chords faster than the fill fixes them.
